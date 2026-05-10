@@ -1,0 +1,12 @@
+{
+  "name": "scholarmind",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ScholarMind monorepo：Web + FastAPI + Agent + MCP + Eval",
+  "workspaces": ["scholarmind-web"],
+  "scripts": {
+    "py:sync": "uv sync",
+    "py:dev": "uv sync --group dev",
+    "py:test": "uv run pytest scholarmind-server/tests -q"
+  }
+}

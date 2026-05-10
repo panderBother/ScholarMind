@@ -1,0 +1,52 @@
+from datetime import datetime, timedelta, timezone
+
+import bcrypt
+from jose import JWTError, jwt
+
+from app.core.config import settings
+
+
+def hash_password(plain: str) -> str:
+    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(plain: str, password_hash: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), password_hash.encode("utf-8"))
+    except ValueError:
+        return False
+
+
+def create_access_token(subject: str) -> tuple[str, int]:
+    """返回 (jwt, expires_in 秒)。"""
+    days = settings.access_token_expire_days
+    expire = datetime.now(timezone.utc) + timedelta(days=days)
+    exp_ts = int(expire.timestamp())
+    payload = {"sub": subject, "exp": exp_ts}
+    token = jwt.encode(
+        payload,
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+    return token, int(timedelta(days=days).total_seconds())
+
+
+def decode_access_token(token: str) -> str | None:
+    """成功返回 user id (sub)，失败返回 None。"""
+    try:
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+        )
+        sub = payload.get("sub")
+        if sub is None or not isinstance(sub, str):
+            return None
+        return sub
+    except JWTError:
+        return None
+
+
+def verify_token(token: str) -> bool:
+    """兼容旧占位：非空且可解码出 sub 即视为有效。"""
+    return decode_access_token(token) is not None

@@ -1,0 +1,14 @@
+# 方案 B：本机 Redis（供 Celery broker / result backend）
+# 启动：docker compose -f docker-compose.redis.yml up -d
+# 停止：docker compose -f docker-compose.redis.yml down
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:
