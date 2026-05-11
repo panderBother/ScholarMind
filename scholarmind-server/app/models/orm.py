@@ -27,6 +27,10 @@ class User(Base):
     knowledge_bases: Mapped[list[KnowledgeBase]] = relationship(
         back_populates="owner", cascade="all, delete-orphan"
     )
+    conversations: Mapped[list[Conversation]] = relationship(
+        back_populates="owner",
+        cascade="all, delete-orphan",
+    )
 
 
 class KnowledgeBase(Base):
@@ -85,3 +89,82 @@ class Document(Base):
     )
 
     knowledge_base: Mapped[KnowledgeBase] = relationship(back_populates="documents")
+
+
+class Conversation(Base):
+    """多轮对话会话（MySQL 事实源）。"""
+
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    knowledge_base_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("knowledge_bases.id", ondelete="SET NULL"), nullable=True
+    )
+    deep_research: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
+    web_search: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_summarized_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    last_summary_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acc_turns_since_summary: Mapped[int] = mapped_column(
+        Integer(), nullable=False, default=0, server_default="0"
+    )
+    acc_tokens_since_summary: Mapped[int] = mapped_column(
+        Integer(), nullable=False, default=0, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    owner: Mapped[User] = relationship(back_populates="conversations")
+    messages: Mapped[list[ChatMessage]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
+    summaries: Mapped[list[ConversationSummary]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text(), nullable=False)
+    trace_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    token_est: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    conversation: Mapped[Conversation] = relationship(back_populates="messages")
+
+
+class ConversationSummary(Base):
+    __tablename__ = "conversation_summaries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    covers_up_to_message_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    summary_text: Mapped[str] = mapped_column(Text(), nullable=False)
+    model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    conversation: Mapped[Conversation] = relationship(back_populates="summaries")

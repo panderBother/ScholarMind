@@ -3,7 +3,7 @@ import { Plug } from "lucide-react";
 /** 工具聚合页：后续挂载 MCP 工具配置、API Key 与调用配额等 */
 export function ToolsPage() {
   return (
-    <div className="p-4 pb-6 lg:p-8">
+    <div className="min-h-0 flex-1 overflow-y-auto p-4 pb-6 lg:p-8">
       <h1 className="text-lg font-semibold text-slate-900 lg:text-xl">工具与集成</h1>
       <p className="mt-2 max-w-2xl text-xs text-slate-600 lg:text-sm">
         此页面对接 <code className="rounded bg-slate-100 px-1">scholarmind-mcp</code>{" "}

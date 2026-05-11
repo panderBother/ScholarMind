@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ImperativePanelHandle } from "react-resizable-panels";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useNavigate } from "react-router-dom";
 import {
   BookOpen,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  ExternalLink,
+  GripVertical,
   Loader2,
+  MessageSquare,
   Plus,
   Send,
   Sparkles,
@@ -13,6 +19,14 @@ import {
 import { AssistantMarkdown } from "@/components/AssistantMarkdown";
 import { getAccessToken } from "@/services/auth";
 import { streamChatMessage } from "@/services/chat";
+import {
+  type ConversationDto,
+  fetchConversation,
+  fetchConversationMessages,
+  getStoredConversationId,
+  listConversations,
+  setStoredConversationId,
+} from "@/services/conversations";
 import { listKnowledgeBases, type KnowledgeBaseDto } from "@/services/knowledgeBases";
 import { mergeThinkingParts, partitionThinkingBlocks } from "@/utils/partitionThinking";
 
@@ -21,18 +35,31 @@ type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   trace_id?: string;
-  /** false：SSE 未结束，交给 Streamdown 的流式模式 */
   streamFinal?: boolean;
-  /** DeepSeek-R1 等返回的推理过程（SSE thinking_delta） */
   thinkingContent?: string;
 };
 
+type LeftRailTab = "sessions" | "knowledge";
+
+function formatConversationLabel(c: ConversationDto): string {
+  if (c.title && c.title.trim()) return c.title.trim();
+  try {
+    const d = new Date(c.updated_at);
+    return `会话 ${d.toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+  } catch {
+    return `会话 ${c.id.slice(0, 8)}`;
+  }
+}
+
 /**
- * 对话与研究：`POST /api/v1/chat/stream`（SSE）+ Streamdown（Shiki 高亮）；侧栏 trace_id。
+ * 对话与研究：SSE + 多轮会话（刷新后从后端恢复）；桌面端三栏可拖拽宽度、侧栏可折叠。
  */
 export function ChatPage() {
   const nav = useNavigate();
   const bottomRef = useRef<HTMLDivElement>(null);
+  const leftPanelRef = useRef<ImperativePanelHandle>(null);
+  const rightPanelRef = useRef<ImperativePanelHandle>(null);
+
   const [kbs, setKbs] = useState<KnowledgeBaseDto[]>([]);
   const [kbId, setKbId] = useState<string>("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -43,6 +70,16 @@ export function ChatPage() {
   const [err, setErr] = useState<string | null>(null);
   const [showThought, setShowThought] = useState(true);
   const [mobileKbOpen, setMobileKbOpen] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [hydrating, setHydrating] = useState(() => !!(getAccessToken() && getStoredConversationId()));
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [conversations, setConversations] = useState<ConversationDto[]>([]);
+  const [loadingConvList, setLoadingConvList] = useState(false);
+  const [switchingConv, setSwitchingConv] = useState(false);
+  const [mobileSessionsOpen, setMobileSessionsOpen] = useState(false);
+  /** 桌面左侧栏：会话与知识库分栏，避免混在同一滚动区 */
+  const [leftRailTab, setLeftRailTab] = useState<LeftRailTab>("sessions");
 
   const kbName = useMemo(() => kbs.find((k) => k.id === kbId)?.name ?? "选择知识库", [kbs, kbId]);
 
@@ -73,13 +110,100 @@ export function ChatPage() {
     void loadKbs();
   }, [loadKbs]);
 
+  const loadConversationList = useCallback(async () => {
+    if (!getAccessToken()) return;
+    setLoadingConvList(true);
+    try {
+      const rows = await listConversations(80);
+      setConversations(rows);
+    } catch {
+      /* 列表失败不阻断对话 */
+    } finally {
+      setLoadingConvList(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (getAccessToken()) void loadConversationList();
+  }, [loadConversationList]);
+
+  const applyConversationPayload = useCallback((conv: ConversationDto, msgs: Awaited<ReturnType<typeof fetchConversationMessages>>) => {
+    setConversationId(conv.id);
+    setStoredConversationId(conv.id);
+    if (conv.knowledge_base_id) setKbId(conv.knowledge_base_id);
+    setDeepResearch(conv.deep_research);
+    setWebSearch(conv.web_search);
+    setMessages(
+      msgs.map((m) => ({
+        id: m.id,
+        role: m.role === "assistant" ? "assistant" : "user",
+        content: m.content,
+        trace_id: m.trace_id ?? undefined,
+        streamFinal: true,
+      })),
+    );
+  }, []);
+
+  /** 刷新后：从 localStorage 的会话 id 拉取消息（后端已持久化） */
+  useEffect(() => {
+    if (!getAccessToken()) {
+      setHydrating(false);
+      return;
+    }
+    const cid = getStoredConversationId();
+    if (!cid) {
+      setHydrating(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [conv, msgs] = await Promise.all([fetchConversation(cid), fetchConversationMessages(cid)]);
+        if (cancelled) return;
+        applyConversationPayload(conv, msgs);
+        void loadConversationList();
+      } catch {
+        setStoredConversationId(null);
+        setConversationId(null);
+      } finally {
+        if (!cancelled) setHydrating(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyConversationPayload, loadConversationList]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
+  const selectConversation = useCallback(
+    async (id: string) => {
+      if (loading || switchingConv) return;
+      if (id === conversationId) return;
+      setSwitchingConv(true);
+      setErr(null);
+      setMobileSessionsOpen(false);
+      try {
+        const [conv, msgs] = await Promise.all([fetchConversation(id), fetchConversationMessages(id)]);
+        applyConversationPayload(conv, msgs);
+        void loadConversationList();
+      } catch {
+        setErr("加载会话失败，可能已被删除");
+        setStoredConversationId(null);
+        setConversationId(null);
+        setMessages([]);
+      } finally {
+        setSwitchingConv(false);
+      }
+    },
+    [applyConversationPayload, conversationId, loadConversationList, loading, switchingConv],
+  );
+
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || loading || hydrating || switchingConv) return;
     setErr(null);
     setInput("");
     const userMsg: ChatMessage = {
@@ -106,12 +230,17 @@ export function ChatPage() {
           knowledge_base_id: kbId || null,
           deep_research: deepResearch,
           web_search: webSearch,
+          conversation_id: conversationId,
         },
         {
           onTraceId: (traceId) => {
             setMessages((m) =>
               m.map((row) => (row.id === assistantId ? { ...row, trace_id: traceId } : row)),
             );
+          },
+          onConversationId: (cid) => {
+            setConversationId(cid);
+            setStoredConversationId(cid);
           },
           onThinkingDelta: (chunk) => {
             thinkingAcc += chunk;
@@ -179,13 +308,12 @@ export function ChatPage() {
         : `**请求失败** ${msg}`;
       setMessages((m) =>
         m.map((row) =>
-          row.id === assistantId
-            ? { ...row, content: mdBody, streamFinal: true }
-            : row,
+          row.id === assistantId ? { ...row, content: mdBody, streamFinal: true } : row,
         ),
       );
     } finally {
       setLoading(false);
+      void loadConversationList();
     }
   };
 
@@ -193,279 +321,587 @@ export function ChatPage() {
     setMessages([]);
     setErr(null);
     setInput("");
+    setConversationId(null);
+    setStoredConversationId(null);
+    void loadConversationList();
   };
 
   const appendPrompt = (t: string) => {
     setInput((prev) => (prev ? `${prev}\n${t}` : t));
   };
 
-  return (
-    <div className="flex h-full min-h-0 flex-col lg:flex-row">
-      <aside className="hidden w-64 shrink-0 flex-col border-r border-slate-200 bg-white lg:flex">
-        <div className="flex items-center justify-between border-b border-slate-100 p-3">
-          <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">知识库</span>
+  const knowledgeGraphPlaceholder = (
+    <div className="border-t border-slate-100 p-3">
+      <div className="mb-2 text-xs font-semibold text-slate-500">知识图谱（示意）</div>
+      <div className="relative h-36 rounded-lg bg-slate-50 p-2 text-[10px] text-slate-500">
+        <div className="absolute left-6 top-6 rounded-md bg-white px-2 py-1 shadow">实体 A</div>
+        <div className="absolute right-8 top-10 rounded-md bg-white px-2 py-1 shadow">实体 B</div>
+        <div className="absolute bottom-8 left-10 rounded-md bg-primary-soft px-2 py-1 text-primary shadow">
+          关系
+        </div>
+        <svg className="pointer-events-none absolute inset-0 h-full w-full">
+          <line x1="40" y1="40" x2="120" y2="50" stroke="#CBD5E1" strokeWidth="1" />
+        </svg>
+      </div>
+    </div>
+  );
+
+  const leftAside = (
+    <aside className="flex h-full min-h-0 flex-col border-slate-200 bg-white lg:border-r">
+      <div className="flex shrink-0 items-center gap-1 border-b border-slate-100 p-2">
+        {!leftCollapsed ? (
+          <>
+            <span className="min-w-0 flex-1 truncate px-1 text-xs font-semibold text-slate-600">
+              {leftRailTab === "sessions" ? "历史会话" : "检索范围"}
+            </span>
+            <button
+              type="button"
+              onClick={() => leftPanelRef.current?.collapse()}
+              className="shrink-0 rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+              title="收起侧栏"
+              aria-label="收起左侧栏"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => leftPanelRef.current?.expand()}
+            className="mx-auto rounded-md p-1.5 text-slate-500 hover:bg-slate-100"
+            title="展开侧栏"
+            aria-label="展开左侧栏"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        )}
+        {!leftCollapsed ? (
           <button
             type="button"
             onClick={newChat}
-            className="text-xs font-medium text-primary hover:underline"
+            className="shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-primary-soft"
           >
             新对话
           </button>
-        </div>
-        <ul className="flex-1 space-y-1 overflow-y-auto p-2 text-sm">
-          {kbs.length === 0 ? (
-            <li className="px-2 py-2 text-xs text-slate-500">暂无知识库，请先在「知识库」中创建</li>
-          ) : (
-            kbs.map((k) => (
-              <li key={k.id}>
-                <button
-                  type="button"
-                  onClick={() => setKbId(k.id)}
-                  className={
-                    k.id === kbId
-                      ? "flex w-full items-center gap-2 rounded-lg bg-primary-soft px-2 py-2 text-left font-medium text-primary"
-                      : "flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-slate-700 hover:bg-slate-50"
-                  }
-                >
-                  <BookOpen className="h-4 w-4 shrink-0 text-primary" />
-                  <span className="line-clamp-2">{k.name}</span>
-                </button>
-              </li>
-            ))
-          )}
-        </ul>
-        <div className="border-t border-slate-100 p-3">
-          <div className="mb-2 text-xs font-semibold text-slate-500">知识图谱（示意）</div>
-          <div className="relative h-40 rounded-lg bg-slate-50 p-2 text-[10px] text-slate-500">
-            <div className="absolute left-6 top-6 rounded-md bg-white px-2 py-1 shadow">实体 A</div>
-            <div className="absolute right-8 top-10 rounded-md bg-white px-2 py-1 shadow">实体 B</div>
-            <div className="absolute bottom-8 left-10 rounded-md bg-primary-soft px-2 py-1 text-primary shadow">
-              关系
-            </div>
-            <svg className="pointer-events-none absolute inset-0 h-full w-full">
-              <line x1="40" y1="40" x2="120" y2="50" stroke="#CBD5E1" strokeWidth="1" />
-            </svg>
-          </div>
-        </div>
-      </aside>
-
-      <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-slate-50">
-        <header className="flex items-center gap-2 border-b border-slate-200 bg-white px-3 py-2.5 lg:px-6 lg:py-3">
-          <div className="relative min-w-0 flex-1 lg:hidden">
-            <button
-              type="button"
-              onClick={() => setMobileKbOpen((v) => !v)}
-              className="flex w-full items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-left text-sm font-medium text-slate-800"
+        ) : null}
+      </div>
+      {!leftCollapsed ? (
+        <>
+          <div className="shrink-0 border-b border-slate-100 px-2 pb-2 pt-2">
+            <div
+              className="flex rounded-lg bg-slate-100 p-0.5"
+              role="tablist"
+              aria-label="侧栏分区"
             >
-              <span className="truncate">{kbName}</span>
-              <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
-            </button>
-            {mobileKbOpen ? (
-              <ul className="absolute left-0 right-0 top-full z-20 mt-1 max-h-48 overflow-auto rounded-xl border border-slate-200 bg-white py-1 shadow-lg">
-                {kbs.map((k) => (
-                  <li key={k.id}>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={leftRailTab === "sessions"}
+                onClick={() => setLeftRailTab("sessions")}
+                className={
+                  leftRailTab === "sessions"
+                    ? "flex flex-1 items-center justify-center gap-1 rounded-md bg-white px-2 py-1.5 text-xs font-semibold text-slate-900 shadow-sm"
+                    : "flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900"
+                }
+              >
+                <MessageSquare className="h-3.5 w-3.5" aria-hidden />
+                会话
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={leftRailTab === "knowledge"}
+                onClick={() => setLeftRailTab("knowledge")}
+                className={
+                  leftRailTab === "knowledge"
+                    ? "flex flex-1 items-center justify-center gap-1 rounded-md bg-white px-2 py-1.5 text-xs font-semibold text-slate-900 shadow-sm"
+                    : "flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900"
+                }
+              >
+                <BookOpen className="h-3.5 w-3.5" aria-hidden />
+                知识库
+              </button>
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            {leftRailTab === "sessions" ? (
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2 pt-1">
+                  <div className="mb-2 flex items-center justify-between px-1">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                      对话列表
+                    </span>
+                    {loadingConvList ? (
+                      <Loader2 className="h-3 w-3 animate-spin text-slate-400" aria-hidden />
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={newChat}
+                    disabled={switchingConv}
+                    className={
+                      !conversationId
+                        ? "mb-2 flex w-full items-center gap-2 rounded-lg bg-primary-soft px-2 py-2 text-left text-xs font-medium text-primary"
+                        : "mb-2 flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs text-slate-600 ring-1 ring-slate-100 hover:bg-slate-50"
+                    }
+                  >
+                    <SquarePen className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">新草稿（尚未入库）</span>
+                  </button>
+                  <ul className="space-y-1">
+                    {conversations.map((c) => (
+                      <li key={c.id}>
+                        <button
+                          type="button"
+                          disabled={switchingConv}
+                          onClick={() => void selectConversation(c.id)}
+                          className={
+                            c.id === conversationId
+                              ? "flex w-full items-start gap-2 rounded-lg bg-primary-soft px-2 py-2 text-left text-xs font-medium text-primary"
+                              : "flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+                          }
+                        >
+                          <span className="line-clamp-2 min-w-0 flex-1">{formatConversationLabel(c)}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  {!loadingConvList && conversations.length === 0 ? (
+                    <p className="px-1 py-3 text-[11px] leading-relaxed text-slate-500">
+                      暂无历史会话。发送第一条消息后，会话会保存并出现在此列表。
+                    </p>
+                  ) : null}
+                </div>
+                <div className="shrink-0 border-t border-slate-100 bg-slate-50/90 px-2 py-2">
+                  <p className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                    当前检索知识库
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setLeftRailTab("knowledge")}
+                    className="flex w-full items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-2 text-left text-xs text-slate-800 shadow-sm hover:border-primary/30 hover:bg-primary-soft/40"
+                  >
+                    <BookOpen className="h-4 w-4 shrink-0 text-primary" aria-hidden />
+                    <span className="min-w-0 flex-1 truncate font-medium">{kbName}</span>
+                    <span className="shrink-0 text-[10px] text-primary">切换</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                  <div className="flex items-start justify-between gap-2 px-2 pb-2 pt-1">
+                    <p className="text-[11px] leading-relaxed text-slate-500">
+                      选择后，新消息将关联该知识库检索（已开始的会话仍沿用当时设置）。
+                    </p>
                     <button
                       type="button"
-                      className="w-full px-3 py-2 text-left text-sm hover:bg-slate-50"
-                      onClick={() => {
-                        setKbId(k.id);
-                        setMobileKbOpen(false);
-                      }}
+                      onClick={() => nav("/knowledge-bases")}
+                      className="inline-flex shrink-0 items-center gap-0.5 rounded-md px-1.5 py-1 text-[10px] font-medium text-primary hover:bg-primary-soft"
                     >
-                      {k.name}
+                      管理
+                      <ExternalLink className="h-3 w-3" aria-hidden />
                     </button>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
+                  </div>
+                  <ul className="space-y-1 px-2 pb-2 text-sm">
+                    {kbs.length === 0 ? (
+                      <li className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-500">
+                        暂无知识库。
+                        <button
+                          type="button"
+                          onClick={() => nav("/knowledge-bases")}
+                          className="mt-2 block w-full rounded-lg bg-primary px-3 py-2 font-semibold text-white hover:bg-primary-hover"
+                        >
+                          去创建
+                        </button>
+                      </li>
+                    ) : (
+                      kbs.map((k) => (
+                        <li key={k.id}>
+                          <button
+                            type="button"
+                            onClick={() => setKbId(k.id)}
+                            className={
+                              k.id === kbId
+                                ? "flex w-full items-center gap-2 rounded-lg bg-primary-soft px-2 py-2 text-left font-medium text-primary"
+                                : "flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-slate-700 hover:bg-slate-50"
+                            }
+                          >
+                            <BookOpen className="h-4 w-4 shrink-0 text-primary" />
+                            <span className="line-clamp-2">{k.name}</span>
+                          </button>
+                        </li>
+                      ))
+                    )}
+                  </ul>
+                  {knowledgeGraphPlaceholder}
+                </div>
+              </div>
+            )}
           </div>
-          <span className="hidden text-sm font-semibold text-slate-900 lg:inline">对话与研究</span>
+        </>
+      ) : null}
+    </aside>
+  );
+
+  const rightAside = (
+    <aside className="flex h-full min-h-0 flex-col border-slate-200 bg-white lg:border-l">
+      <div className="flex items-center gap-1 border-b border-slate-100 p-2">
+        {!rightCollapsed ? (
+          <>
+            <button
+              type="button"
+              onClick={() => rightPanelRef.current?.collapse()}
+              className="shrink-0 rounded-md p-1.5 text-slate-500 hover:bg-slate-100"
+              title="收起追踪栏"
+              aria-label="收起请求追踪侧栏"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <span className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wide text-slate-400">
+              请求追踪
+            </span>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => rightPanelRef.current?.expand()}
+            className="mx-auto rounded-md p-1.5 text-slate-500 hover:bg-slate-100"
+            title="展开追踪"
+            aria-label="展开请求追踪侧栏"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+      {!rightCollapsed ? (
+        <>
+          <div className="border-b border-slate-100 p-4">
+            <div className="break-all font-mono text-xs text-slate-600">{lastTraceId ?? "—"}</div>
+            <div className="mt-2 text-xs text-slate-500">与后端 ChatResponse.trace_id 一致</div>
+          </div>
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 text-xs">
+            <div className="rounded-lg border border-dashed border-slate-200 p-3 text-slate-500">
+              <p className="font-semibold text-slate-700">Agent 步骤</p>
+              <p className="mt-1 leading-relaxed">
+                正文已通过 SSE 流式渲染；此处可后续接入计划、检索、工具调用等元事件。
+              </p>
+            </div>
+          </div>
+          <div className="border-t border-slate-100 p-4">
+            <div className="text-xs font-semibold text-slate-500">当前知识库</div>
+            <div className="mt-1 text-sm font-medium text-slate-900">{kbName}</div>
+          </div>
+        </>
+      ) : null}
+    </aside>
+  );
+
+  const mainSection = (
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-slate-50">
+      <header className="flex shrink-0 items-center gap-2 border-b border-slate-200 bg-white px-3 py-2.5 lg:px-6 lg:py-3">
+        <div className="relative min-w-0 flex-1 lg:hidden">
+          <button
+            type="button"
+            onClick={() => setMobileKbOpen((v) => !v)}
+            className="flex w-full items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-left text-sm font-medium text-slate-800"
+          >
+            <span className="truncate">{kbName}</span>
+            <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
+          </button>
+          {mobileKbOpen ? (
+            <ul className="absolute left-0 right-0 top-full z-20 mt-1 max-h-48 overflow-auto rounded-xl border border-slate-200 bg-white py-1 shadow-lg">
+              {kbs.map((k) => (
+                <li key={k.id}>
+                  <button
+                    type="button"
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-slate-50"
+                    onClick={() => {
+                      setKbId(k.id);
+                      setMobileKbOpen(false);
+                    }}
+                  >
+                    {k.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setMobileSessionsOpen((v) => !v);
+            setMobileKbOpen(false);
+          }}
+          className="shrink-0 rounded-xl border border-slate-200 bg-white p-2 text-slate-600 hover:bg-slate-50 lg:hidden"
+          aria-expanded={mobileSessionsOpen}
+          aria-label="会话列表"
+        >
+          <MessageSquare className="h-5 w-5" />
+        </button>
+        <span className="hidden text-sm font-semibold text-slate-900 lg:inline">对话与研究</span>
+        <button
+          type="button"
+          onClick={newChat}
+          className="ml-auto shrink-0 rounded-full border border-slate-200 bg-white p-2 text-slate-500 hover:bg-slate-50 lg:hidden"
+          aria-label="新对话"
+        >
+          <SquarePen className="h-5 w-5" />
+        </button>
+      </header>
+
+      {mobileSessionsOpen ? (
+        <div className="max-h-[40vh] shrink-0 overflow-y-auto overscroll-contain border-b border-slate-200 bg-white px-3 py-2 lg:hidden">
+          <div className="mb-2 flex items-center justify-between text-xs font-semibold text-slate-500">
+            <span>会话</span>
+            {loadingConvList ? <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" aria-hidden /> : null}
+          </div>
           <button
             type="button"
             onClick={newChat}
-            className="ml-auto shrink-0 rounded-full border border-slate-200 bg-white p-2 text-slate-500 hover:bg-slate-50 lg:hidden"
-            aria-label="新对话"
+            disabled={switchingConv}
+            className={
+              !conversationId
+                ? "mb-1 flex w-full items-center gap-2 rounded-lg bg-primary-soft px-3 py-2.5 text-left text-sm font-medium text-primary"
+                : "mb-1 flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50"
+            }
           >
-            <SquarePen className="h-5 w-5" />
+            <SquarePen className="h-4 w-4 shrink-0" />
+            新草稿
           </button>
-        </header>
+          <ul className="space-y-1 pb-2">
+            {conversations.map((c) => (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  disabled={switchingConv}
+                  onClick={() => void selectConversation(c.id)}
+                  className={
+                    c.id === conversationId
+                      ? "w-full rounded-lg bg-primary-soft px-3 py-2.5 text-left text-sm font-medium text-primary"
+                      : "w-full rounded-lg px-3 py-2.5 text-left text-sm text-slate-800 hover:bg-slate-50"
+                  }
+                >
+                  <span className="line-clamp-2">{formatConversationLabel(c)}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
-        {err ? (
-          <div className="mx-3 mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 lg:mx-6">{err}</div>
+      {err ? (
+        <div className="mx-3 mt-2 shrink-0 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 lg:mx-6">{err}</div>
+      ) : null}
+
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-3 py-4 lg:space-y-6 lg:px-6 lg:py-6">
+        {hydrating && messages.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-3 py-16 text-sm text-slate-500">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <p>正在从服务器恢复上次会话…</p>
+          </div>
         ) : null}
 
-        <div className="flex-1 space-y-4 overflow-y-auto px-3 py-4 lg:space-y-6 lg:px-6 lg:py-6">
-          {messages.length === 0 && !loading ? (
-            <div className="mx-auto max-w-2xl rounded-2xl border border-dashed border-slate-200 bg-white/80 p-6 text-center text-sm text-slate-600">
-              <p className="font-medium text-slate-800">开始对话</p>
-              <p className="mt-2 text-xs leading-relaxed">
-                已接入后端 <code className="rounded bg-slate-100 px-1">POST /api/v1/chat/stream</code>（SSE）与
-                EdgeFN 模型流式输出 + Streamdown（Shiki 代码高亮）。请确认服务端已配置{" "}
-                <code className="rounded bg-slate-100 px-1">EDGEFN_API_KEY</code> 并重启 API。
-              </p>
-            </div>
-          ) : null}
+        {!hydrating && messages.length === 0 && !loading ? (
+          <div className="mx-auto max-w-2xl rounded-2xl border border-dashed border-slate-200 bg-white/80 p-6 text-center text-sm text-slate-600">
+            <p className="font-medium text-slate-800">开始对话</p>
+            <p className="mt-2 text-xs leading-relaxed">
+              多轮对话会保存到服务器；刷新页面会自动恢复当前会话。点击「新对话」可清空并开始新会话。
+            </p>
+          </div>
+        ) : null}
 
-          {messages.map((m) =>
-            m.role === "user" ? (
-              <div
-                key={m.id}
-                className="ml-auto max-w-[90%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-sm text-white shadow lg:max-w-3xl lg:rounded-2xl lg:py-3"
-              >
-                <p className="whitespace-pre-wrap break-words">{m.content}</p>
+        {messages.map((m) =>
+          m.role === "user" ? (
+            <div
+              key={m.id}
+              className="ml-auto max-w-[90%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-sm text-white shadow lg:max-w-3xl lg:rounded-2xl lg:py-3"
+            >
+              <p className="whitespace-pre-wrap break-words">{m.content}</p>
+            </div>
+          ) : (
+            <div
+              key={m.id}
+              className="max-w-full rounded-2xl border border-slate-200 bg-white p-4 text-sm leading-relaxed text-slate-800 shadow-card lg:max-w-4xl lg:p-5"
+            >
+              <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                <Sparkles className="h-4 w-4 text-primary" />
+                ScholarMind
+                {m.trace_id ? (
+                  <span className="ml-auto font-mono text-[10px] font-normal normal-case text-slate-400">
+                    {m.trace_id.slice(0, 8)}…
+                  </span>
+                ) : null}
               </div>
-            ) : (
-              <div
-                key={m.id}
-                className="max-w-full rounded-2xl border border-slate-200 bg-white p-4 text-sm leading-relaxed text-slate-800 shadow-card lg:max-w-4xl lg:p-5"
-              >
-                <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-                  <Sparkles className="h-4 w-4 text-primary" />
-                  ScholarMind
-                  {m.trace_id ? (
-                    <span className="ml-auto font-mono text-[10px] font-normal normal-case text-slate-400">
-                      {m.trace_id.slice(0, 8)}…
-                    </span>
-                  ) : null}
-                </div>
-                <div className="lg:hidden">
-                  <button
-                    type="button"
-                    onClick={() => setShowThought((v) => !v)}
-                    className="mb-2 flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium text-slate-600"
-                  >
-                    <span>思维链</span>
-                    {showThought ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                  </button>
-                  {showThought ? (
-                    m.thinkingContent ? (
-                      <pre className="mb-3 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-slate-100 bg-slate-50/90 p-3 font-sans text-xs text-slate-600">
-                        {m.thinkingContent}
-                      </pre>
-                    ) : !(m.streamFinal ?? true) ? (
-                      <p className="mb-3 text-xs text-slate-500">推理中…</p>
-                    ) : (
-                      <p className="mb-3 text-xs text-slate-500">
-                        本次未返回可见推理字段（与服务商 / 模型实现有关）。
-                      </p>
-                    )
-                  ) : null}
-                </div>
+              <div className="lg:hidden">
                 <button
                   type="button"
                   onClick={() => setShowThought((v) => !v)}
-                  className="mb-3 hidden w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium text-slate-600 lg:flex"
+                  className="mb-2 flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium text-slate-600"
                 >
                   <span>思维链</span>
                   {showThought ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                 </button>
-                {showThought &&
-                  (m.thinkingContent ? (
-                    <pre className="mb-3 hidden max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-slate-100 bg-slate-50/90 p-3 font-sans text-xs text-slate-600 lg:block">
+                {showThought ? (
+                  m.thinkingContent ? (
+                    <pre className="mb-3 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-slate-100 bg-slate-50/90 p-3 font-sans text-xs text-slate-600">
                       {m.thinkingContent}
                     </pre>
                   ) : !(m.streamFinal ?? true) ? (
-                    <p className="mb-3 hidden text-xs text-slate-500 lg:block">推理中…</p>
+                    <p className="mb-3 text-xs text-slate-500">推理中…</p>
                   ) : (
-                    <p className="mb-3 hidden text-xs text-slate-500 lg:block">
+                    <p className="mb-3 text-xs text-slate-500">
                       本次未返回可见推理字段（与服务商 / 模型实现有关）。
                     </p>
-                  ))}
-                <AssistantMarkdown
-                  markdown={m.content}
-                  isStreaming={!(m.streamFinal ?? true)}
-                />
+                  )
+                ) : null}
               </div>
-            ),
-          )}
-
-          {loading ? (
-            <div className="flex items-center gap-2 text-sm text-slate-500">
-              <Loader2 className="h-4 w-4 animate-spin text-primary" />
-              正在等待回复…
+              <button
+                type="button"
+                onClick={() => setShowThought((v) => !v)}
+                className="mb-3 hidden w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium text-slate-600 lg:flex"
+              >
+                <span>思维链</span>
+                {showThought ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              </button>
+              {showThought &&
+                (m.thinkingContent ? (
+                  <pre className="mb-3 hidden max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-slate-100 bg-slate-50/90 p-3 font-sans text-xs text-slate-600 lg:block">
+                    {m.thinkingContent}
+                  </pre>
+                ) : !(m.streamFinal ?? true) ? (
+                  <p className="mb-3 hidden text-xs text-slate-500 lg:block">推理中…</p>
+                ) : (
+                  <p className="mb-3 hidden text-xs text-slate-500 lg:block">
+                    本次未返回可见推理字段（与服务商 / 模型实现有关）。
+                  </p>
+                ))}
+              <AssistantMarkdown markdown={m.content} isStreaming={!(m.streamFinal ?? true)} />
             </div>
-          ) : null}
+          ),
+        )}
 
-          <div ref={bottomRef} />
-        </div>
+        {loading ? (
+          <div className="flex items-center gap-2 text-sm text-slate-500">
+            <Loader2 className="h-4 w-4 animate-spin text-primary" />
+            正在等待回复…
+          </div>
+        ) : null}
 
-        <div className="flex flex-wrap gap-2 px-3 pb-1 lg:px-6">
-          {["总结要点", "给出参考文献", "列出关键术语"].map((label) => (
+        <div ref={bottomRef} />
+      </div>
+
+      <div className="flex shrink-0 flex-wrap gap-2 px-3 pb-1 lg:px-6">
+        {["总结要点", "给出参考文献", "列出关键术语"].map((label) => (
+          <button
+            key={label}
+            type="button"
+            onClick={() => appendPrompt(label)}
+            className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:border-primary/40 hover:text-primary"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <footer className="shrink-0 border-t border-slate-200 bg-white px-2 py-2 lg:p-4">
+        <div className="mx-auto max-w-4xl overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-sm lg:rounded-xl">
+          <textarea
+            rows={2}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void handleSend();
+              }
+            }}
+            disabled={loading || hydrating || switchingConv}
+            className="max-h-32 min-h-[40px] w-full resize-none border-0 bg-transparent px-3 pb-2 pt-3 text-[15px] leading-5 text-slate-900 outline-none ring-0 placeholder:text-slate-400 focus:ring-0 disabled:opacity-60 lg:min-h-[72px] lg:px-4 lg:pb-3 lg:pt-3 lg:text-sm"
+            placeholder="输入问题…（Enter 发送，Shift+Enter 换行）"
+          />
+          <div className="flex items-center gap-2 border-t border-slate-100 bg-slate-50/95 px-2 py-2 lg:gap-3 lg:px-3 lg:py-2.5">
             <button
-              key={label}
               type="button"
-              onClick={() => appendPrompt(label)}
-              className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:border-primary/40 hover:text-primary"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 opacity-50"
+              aria-label="附件（未接入）"
+              disabled
             >
-              {label}
+              <Plus className="h-4 w-4" strokeWidth={2.25} />
             </button>
-          ))}
-        </div>
-
-        <footer className="border-t border-slate-200 bg-white px-2 py-2 lg:p-4">
-          <div className="mx-auto max-w-4xl overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-sm lg:rounded-xl">
-            <textarea
-              rows={2}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void handleSend();
-                }
-              }}
-              disabled={loading}
-              className="max-h-32 min-h-[40px] w-full resize-none border-0 bg-transparent px-3 pb-2 pt-3 text-[15px] leading-5 text-slate-900 outline-none ring-0 placeholder:text-slate-400 focus:ring-0 disabled:opacity-60 lg:min-h-[72px] lg:px-4 lg:pb-3 lg:pt-3 lg:text-sm"
-              placeholder="输入问题…（Enter 发送，Shift+Enter 换行）"
-            />
-            <div className="flex items-center gap-2 border-t border-slate-100 bg-slate-50/95 px-2 py-2 lg:gap-3 lg:px-3 lg:py-2.5">
-              <button
-                type="button"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 opacity-50"
-                aria-label="附件（未接入）"
-                disabled
-              >
-                <Plus className="h-4 w-4" strokeWidth={2.25} />
-              </button>
-              <div className="scrollbar-none flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                <Toggle label="深度研究" on={deepResearch} onToggle={() => setDeepResearch((v) => !v)} />
-                <Toggle label="联网搜索" on={webSearch} onToggle={() => setWebSearch((v) => !v)} />
-              </div>
-              <button
-                type="button"
-                disabled={loading || !input.trim()}
-                onClick={() => void handleSend()}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-primary-hover active:scale-[0.98] disabled:opacity-50 lg:rounded-lg lg:px-4 lg:text-sm"
-              >
-                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" strokeWidth={2} />}
-                发送
-              </button>
+            <div className="scrollbar-none flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <Toggle label="深度研究" on={deepResearch} onToggle={() => setDeepResearch((v) => !v)} />
+              <Toggle label="联网搜索" on={webSearch} onToggle={() => setWebSearch((v) => !v)} />
             </div>
+            <button
+              type="button"
+              disabled={loading || hydrating || switchingConv || !input.trim()}
+              onClick={() => void handleSend()}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-primary-hover active:scale-[0.98] disabled:opacity-50 lg:rounded-lg lg:px-4 lg:text-sm"
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" strokeWidth={2} />}
+              发送
+            </button>
           </div>
-        </footer>
-      </section>
+        </div>
+      </footer>
+    </section>
+  );
 
-      <aside className="hidden w-80 shrink-0 flex-col border-l border-slate-200 bg-white xl:flex">
-        <div className="border-b border-slate-100 p-4">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">请求追踪</div>
-          <div className="mt-1 break-all font-mono text-xs text-slate-600">
-            {lastTraceId ?? "—"}
-          </div>
-          <div className="mt-2 text-xs text-slate-500">与后端 ChatResponse.trace_id 一致</div>
-        </div>
-        <div className="flex-1 space-y-3 overflow-y-auto p-4 text-xs">
-          <div className="rounded-lg border border-dashed border-slate-200 p-3 text-slate-500">
-            <p className="font-semibold text-slate-700">Agent 步骤</p>
-            <p className="mt-1 leading-relaxed">
-              正文已通过 SSE 流式渲染；此处可后续接入计划、检索、工具调用等元事件。
-            </p>
-          </div>
-        </div>
-        <div className="border-t border-slate-100 p-4">
-          <div className="text-xs font-semibold text-slate-500">当前知识库</div>
-          <div className="mt-1 text-sm font-medium text-slate-900">{kbName}</div>
-        </div>
-      </aside>
+  const resizeHandleClass =
+    "group relative flex w-2 shrink-0 items-center justify-center bg-slate-100 hover:bg-primary/15 data-[panel-resize-handle-active]:bg-primary/25 outline-none";
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:min-h-0 lg:flex-row">
+      {/* 移动端：单栏主内容 */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:hidden">{mainSection}</div>
+
+      {/* 桌面端：可拖拽 + 可折叠侧栏；Panel 必须是纵向 flex 容器，子项 flex-1 + overflow 才能正确滚动 */}
+      <div className="hidden min-h-0 min-w-0 flex-1 overflow-hidden lg:flex lg:h-full lg:min-h-0 lg:flex-col">
+        <PanelGroup
+          direction="horizontal"
+          autoSaveId="scholarmind-chat-layout"
+          className="flex h-full min-h-0 w-full flex-1"
+        >
+          <Panel
+            ref={leftPanelRef}
+            collapsible
+            collapsedSize={4}
+            defaultSize={22}
+            minSize={14}
+            maxSize={36}
+            className="flex min-h-0 min-w-0 flex-col"
+            onCollapse={() => setLeftCollapsed(true)}
+            onExpand={() => setLeftCollapsed(false)}
+          >
+            {leftAside}
+          </Panel>
+          <PanelResizeHandle className={resizeHandleClass}>
+            <GripVertical className="h-5 w-5 text-slate-400 opacity-60 group-hover:opacity-100" aria-hidden />
+          </PanelResizeHandle>
+          <Panel defaultSize={56} minSize={38} className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+            {mainSection}
+          </Panel>
+          <PanelResizeHandle className={resizeHandleClass}>
+            <GripVertical className="h-5 w-5 text-slate-400 opacity-60 group-hover:opacity-100" aria-hidden />
+          </PanelResizeHandle>
+          <Panel
+            ref={rightPanelRef}
+            collapsible
+            collapsedSize={4}
+            defaultSize={22}
+            minSize={14}
+            maxSize={34}
+            className="flex min-h-0 min-w-0 flex-col"
+            onCollapse={() => setRightCollapsed(true)}
+            onExpand={() => setRightCollapsed(false)}
+          >
+            {rightAside}
+          </Panel>
+        </PanelGroup>
+      </div>
     </div>
   );
 }

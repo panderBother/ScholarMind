@@ -6,8 +6,15 @@
 
 /* 全局排版：与设计稿一致的清爽无衬线感 */
 html,
-body,
+body {
+  height: 100%;
+}
+
+/* 根节点用纵向 flex，子页面可用 flex-1 + min-h-0 形成可靠的可滚动区域高度链 */
 #root {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
   height: 100%;
 }
 

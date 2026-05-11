@@ -6,7 +6,7 @@ import { Link } from "react-router-dom";
  */
 export function SettingsPage() {
   return (
-    <div className="p-4 pb-6 lg:p-8">
+    <div className="min-h-0 flex-1 overflow-y-auto p-4 pb-6 lg:p-8">
       <h1 className="text-lg font-semibold text-slate-900 lg:text-xl">我的</h1>
       <p className="mt-1 text-xs text-slate-500 lg:text-sm">账户、模型与扩展能力入口</p>
 

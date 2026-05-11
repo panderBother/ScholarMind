@@ -16,7 +16,7 @@ export function ReportPage() {
   const [tab, setTab] = useState<ReportTab>("report");
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-white lg:flex-row">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white lg:flex-row">
       {/* 桌面：目录 */}
       <nav className="hidden w-52 shrink-0 border-r border-slate-200 p-4 text-sm lg:block">
         <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">目录</div>

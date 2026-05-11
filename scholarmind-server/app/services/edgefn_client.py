@@ -85,6 +85,46 @@ def build_chat_messages(
     ]
 
 
+def build_chat_messages_multi(
+    *,
+    deep_research: bool,
+    web_search: bool,
+    kb_context: str | None,
+    memory_summaries: str,
+    memory_retrieval: str,
+    history_pairs: list[tuple[str, str]],
+) -> list[dict[str, str]]:
+    """
+    多轮：system 内放稳定块 A（说明+KB）+ B（摘要）+ 检索摘录；其后按序拼接 user/assistant（含当前 user）。
+    """
+    parts: list[str] = [
+        "你是 ScholarMind 学术助手，回答简洁、可核对；优先使用 Markdown（标题、列表、代码块）。",
+    ]
+    if deep_research:
+        parts.append("用户开启了「深度研究」：尽量分步推理并给出可验证的依据线索。")
+    if web_search:
+        parts.append("用户开启了「联网搜索」：若缺少实时信息请明确说明知识截止日期并避免编造链接。")
+    ctx = (kb_context or "").strip()
+    if ctx:
+        parts.append(
+            "用户已选择「知识库」。下列摘录来自其向量检索结果，请优先依据摘录作答；"
+            "引用时请标明摘录序号或页码；摘录不足以回答时请明确说明，勿编造文献细节。\n\n"
+            + ctx,
+        )
+    summ = (memory_summaries or "").strip()
+    if summ:
+        parts.append("## 较早轮次摘要（系统自动生成，可能省略细节）\n\n" + summ)
+    retr = (memory_retrieval or "").strip()
+    if retr:
+        parts.append("## 相关历史摘录（来自本会话向量检索）\n\n" + retr)
+    system = "\n\n".join(parts)
+    out: list[dict[str, str]] = [{"role": "system", "content": system}]
+    for role, content in history_pairs:
+        r = role if role in ("user", "assistant") else "user"
+        out.append({"role": r, "content": content})
+    return out
+
+
 async def complete_chat(messages: list[dict[str, str]]) -> tuple[str, str, dict[str, Any]]:
     """
     同步补全。返回 (reasoning, content, raw_json)。

@@ -14,7 +14,14 @@ if str(_ROOT) not in sys.path:
 
 from app.core.config import get_settings  # noqa: E402
 from app.db.base import Base  # noqa: E402
-from app.models.orm import Document, KnowledgeBase, User  # noqa: F401, E402
+from app.models.orm import (  # noqa: F401, E402
+    ChatMessage,
+    Conversation,
+    ConversationSummary,
+    Document,
+    KnowledgeBase,
+    User,
+)
 
 config = context.config
 if config.config_file_name is not None:

@@ -11,6 +11,8 @@ export type ChatRequestBody = {
   knowledge_base_id: string | null;
   deep_research: boolean;
   web_search: boolean;
+  /** 续聊时传入；不传则服务端新建会话并在 SSE 中返回 conversation_id */
+  conversation_id?: string | null;
 };
 
 export type ChatResponseBody = {
@@ -20,6 +22,8 @@ export type ChatResponseBody = {
 
 export type ChatStreamHandlers = {
   onTraceId: (traceId: string) => void;
+  /** 多轮记忆：服务端新建或确认的会话 id */
+  onConversationId?: (conversationId: string, isNew: boolean) => void;
   onDelta: (text: string) => void;
   /** 模型推理 / 思维链增量（如 reasoning_content） */
   onThinkingDelta?: (text: string) => void;
@@ -55,6 +59,7 @@ export async function sendChatMessage(body: ChatRequestBody): Promise<ChatRespon
       knowledge_base_id: body.knowledge_base_id,
       deep_research: body.deep_research,
       web_search: body.web_search,
+      conversation_id: body.conversation_id ?? null,
     }),
   });
 
@@ -89,6 +94,7 @@ export async function streamChatMessage(
       knowledge_base_id: body.knowledge_base_id,
       deep_research: body.deep_research,
       web_search: body.web_search,
+      conversation_id: body.conversation_id ?? null,
     }),
     signal,
   });
@@ -117,6 +123,12 @@ export async function streamChatMessage(
     };
     if (msg.type === "trace_id" && typeof msg.trace_id === "string") {
       handlers.onTraceId(msg.trace_id);
+      return;
+    }
+    if (msg.type === "conversation_id" && typeof (msg as { conversation_id?: string }).conversation_id === "string") {
+      const cid = (msg as { conversation_id: string }).conversation_id;
+      const isNew = Boolean((msg as { is_new?: boolean }).is_new);
+      handlers.onConversationId?.(cid, isNew);
       return;
     }
     if (msg.type === "thinking_delta" && typeof msg.text === "string") {

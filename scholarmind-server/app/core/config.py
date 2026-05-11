@@ -60,7 +60,19 @@ class Settings(BaseSettings):
     embedding_http_model: str = "BAAI/bge-m3"
 
     chroma_collection_name: str = "doc_chunks_bge_m3"
+    # 对话记忆向量：与文献 doc_chunks 分 collection，避免 metadata 混用
+    chroma_chat_collection_name: str = "chat_memory_bge_m3"
     milvus_collection_name: str = "scholar_doc_chunks_bge_m3"
+
+    # 对话记忆（可选覆盖 memory_constants 默认值）
+    memory_recent_message_count: int = 8
+    memory_recent_max_tokens: int = 4000
+    memory_summary_trigger_turns: int = 10
+    memory_summary_trigger_tokens: int = 8000
+    memory_summary_cooldown_turns: int = 6
+    memory_summary_cooldown_tokens: int = 4000
+    memory_retrieval_max_tokens: int = 2000
+    memory_retrieval_top_k: int = 10
 
     # RAG：对话前按 kb_id 检索片段条数
     rag_top_k: int = 8

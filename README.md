@@ -21,7 +21,7 @@ ScholarMind 是面向科研与学术场景的「私有文献知识库 + RAG 检�
 |------|------|
 | `scholarmind-server/` | **FastAPI** 后端：JWT 鉴权、知识库与文献 CRUD、PDF 入库与解析任务、Chroma + Whoosh 索引、对接 EdgeFN 的 **SSE 流式对话** |
 | `scholarmind-web/` | **React + Vite + Tailwind** 前端：登录、知识库、文献列表、对话页（Streamdown 流式 Markdown + Shiki 代码高亮）等 |
-| `docs/` | 工程文档（如开发流程与 PRD 阶段映射） |
+| `docs/` | 工程文档：开发流程与 PRD 阶段映射、**[对话记忆与上下文技术方案](docs/ScholarMind_对话记忆与上下文技术方案_v1.md)**（MySQL / Redis / 向量库 / 摘要与默认参数 / Prompt KV 缓存）等 |
 
 其他 PRD 中规划的目录（如独立 Agent 服务、MCP 包、评估流水线）若在仓库中出现，以各子目录 README 或代码注释为准逐步接线。
 

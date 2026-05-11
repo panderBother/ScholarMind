@@ -9,9 +9,9 @@ import { Sidebar } from "./Sidebar";
  */
 export function AppShell() {
   return (
-    <div className="flex h-full min-h-0 flex-col bg-slate-50 lg:flex-row">
+    <div className="flex min-h-0 flex-1 flex-col bg-slate-50 lg:flex-row">
       <Sidebar />
-      <main className="min-h-0 flex-1 overflow-y-auto pb-[calc(4.25rem+env(safe-area-inset-bottom,0px))] lg:pb-0">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pb-[calc(4.25rem+env(safe-area-inset-bottom,0px))] lg:pb-0">
         <Outlet />
       </main>
       <MobileTabBar />

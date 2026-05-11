@@ -17,20 +17,22 @@ import { ToolsPage } from "@/pages/ToolsPage";
  */
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route element={<AppShell />}>
-        <Route path="/" element={<Navigate to="/chat" replace />} />
-        <Route path="/chat" element={<ChatPage />} />
-        <Route path="/knowledge-bases" element={<KnowledgeBasesPage />} />
-        <Route path="/documents" element={<DocumentsPage />} />
-        <Route path="/reports" element={<ReportsIndexPage />} />
-        <Route path="/reports/:id" element={<ReportPage />} />
-        <Route path="/evaluation" element={<EvalDashboardPage />} />
-        <Route path="/tools" element={<ToolsPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-      </Route>
-      <Route path="*" element={<Navigate to="/chat" replace />} />
-    </Routes>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route element={<AppShell />}>
+          <Route path="/" element={<Navigate to="/chat" replace />} />
+          <Route path="/chat" element={<ChatPage />} />
+          <Route path="/knowledge-bases" element={<KnowledgeBasesPage />} />
+          <Route path="/documents" element={<DocumentsPage />} />
+          <Route path="/reports" element={<ReportsIndexPage />} />
+          <Route path="/reports/:id" element={<ReportPage />} />
+          <Route path="/evaluation" element={<EvalDashboardPage />} />
+          <Route path="/tools" element={<ToolsPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/chat" replace />} />
+      </Routes>
+    </div>
   );
 }

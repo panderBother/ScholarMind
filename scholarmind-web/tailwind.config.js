@@ -1,6 +1,13 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  // Streamdown / @streamdown 在 node_modules 内拼接 Tailwind 类名，必须纳入扫描，否则 Shiki 高亮与代码块样式不会出现在最终 CSS 中
+  content: [
+    "./index.html",
+    "./src/**/*.{ts,tsx}",
+    "./node_modules/streamdown/dist/**/*.{js,mjs}",
+    "./node_modules/@streamdown/code/dist/**/*.{js,mjs}",
+    "./node_modules/@streamdown/cjk/dist/**/*.{js,mjs}",
+  ],
   theme: {
     extend: {
       colors: {

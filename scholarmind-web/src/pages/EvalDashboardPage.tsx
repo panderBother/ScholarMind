@@ -32,7 +32,7 @@ const VERSION_CMP = [
  */
 export function EvalDashboardPage() {
   return (
-    <div className="space-y-4 p-4 pb-6 lg:space-y-6 lg:p-8">
+    <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 pb-6 lg:space-y-6 lg:p-8">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between lg:items-end">
         <div>
           <h1 className="text-lg font-semibold text-slate-900 lg:text-xl">RAG 评估看板</h1>

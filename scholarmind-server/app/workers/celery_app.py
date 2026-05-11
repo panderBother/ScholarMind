@@ -48,3 +48,4 @@ celery_app = _build_celery()
 
 # 注册任务模块（依赖 celery_app 已实例化）
 import app.workers.document_tasks  # noqa: E402, F401, I001
+import app.workers.memory_tasks  # noqa: E402, F401, I001

@@ -142,7 +142,7 @@ export function DocumentsPage() {
   const kbName = kbs.find((k) => k.id === kbId)?.name ?? "选择知识库";
 
   return (
-    <div className="space-y-4 p-4 lg:space-y-6 lg:p-8">
+    <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 lg:space-y-6 lg:p-8">
       <div className="flex items-start justify-between gap-3 lg:block">
         <div>
           <h1 className="text-lg font-semibold text-slate-900 lg:text-xl">文献管理</h1>

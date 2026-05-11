@@ -96,7 +96,7 @@ export function KnowledgeBasesPage() {
   };
 
   return (
-    <div className="p-4 pb-2 lg:p-8">
+    <div className="min-h-0 flex-1 overflow-y-auto p-4 pb-2 lg:p-8">
       <header className="mb-4 flex items-center justify-between gap-3 lg:mb-6 lg:hidden">
         <h1 className="text-lg font-semibold text-slate-900">知识库</h1>
         <button

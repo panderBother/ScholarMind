@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class HealthResponse(BaseModel):
@@ -12,6 +12,20 @@ class ChatRequest(BaseModel):
     knowledge_base_id: str | None = None
     deep_research: bool = False
     web_search: bool = False
+    conversation_id: str | None = Field(
+        default=None,
+        description="不传或空则新建会话；传入已有 id 则续聊并写入 MySQL/Redis/向量索引",
+    )
+
+    @field_validator("conversation_id", mode="before")
+    @classmethod
+    def _empty_conv_id_none(cls, v: object) -> str | None:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            s = v.strip()
+            return s if s else None
+        return str(v).strip()
 
 
 class ChatResponse(BaseModel):
