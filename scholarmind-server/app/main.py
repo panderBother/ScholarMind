@@ -5,12 +5,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
+from app.core.logging_setup import configure_app_logging, log_info
 from app.db.session import close_db, init_db
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_app_logging()
     s = get_settings()
+    log_info(
+        "ScholarMind 已启动 file_tools_enabled=%s file_tools_mode=%s",
+        s.file_tools_enabled,
+        s.file_tools_mode,
+    )
     if s.database_url:
         await init_db(s.database_url)
     yield

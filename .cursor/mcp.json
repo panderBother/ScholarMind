@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "scholarmind-web-search": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "scholarmind-mcp",
+        "python",
+        "-m",
+        "web_search.server"
+      ]
+    },
+    "scholarmind-file-writer": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "scholarmind-mcp",
+        "python",
+        "-m",
+        "file_writer.server"
+      ]
+    }
+  }
+}

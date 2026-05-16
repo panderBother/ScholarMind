@@ -6,11 +6,19 @@ import { getAccessToken } from "@/services/auth";
 
 const BASE = "/api/v1";
 
+export type ChatToolResult = {
+  tool: string;
+  ok: boolean;
+  result: Record<string, unknown>;
+};
+
 export type ChatRequestBody = {
   message: string;
   knowledge_base_id: string | null;
   deep_research: boolean;
   web_search: boolean;
+  /** 启用服务端本地文件读写（OpenAI tools） */
+  file_tools?: boolean;
   /** 续聊时传入；不传则服务端新建会话并在 SSE 中返回 conversation_id */
   conversation_id?: string | null;
 };
@@ -29,6 +37,10 @@ export type ChatStreamHandlers = {
   onThinkingDelta?: (text: string) => void;
   /** 上游业务错误（后端仍会在其后发送 `done`） */
   onError?: (message: string) => void;
+  /** 模型调用本地文件读写工具后的结果 */
+  onToolResult?: (payload: ChatToolResult) => void;
+  /** 服务端文件操作日志，如「已执行写入操作」 */
+  onFileLog?: (message: string) => void;
   onDone: () => void;
 };
 
@@ -59,6 +71,7 @@ export async function sendChatMessage(body: ChatRequestBody): Promise<ChatRespon
       knowledge_base_id: body.knowledge_base_id,
       deep_research: body.deep_research,
       web_search: body.web_search,
+      file_tools: body.file_tools ?? true,
       conversation_id: body.conversation_id ?? null,
     }),
   });
@@ -94,6 +107,7 @@ export async function streamChatMessage(
       knowledge_base_id: body.knowledge_base_id,
       deep_research: body.deep_research,
       web_search: body.web_search,
+      file_tools: body.file_tools ?? true,
       conversation_id: body.conversation_id ?? null,
     }),
     signal,
@@ -141,6 +155,21 @@ export async function streamChatMessage(
     }
     if (msg.type === "error" && typeof msg.message === "string") {
       handlers.onError?.(msg.message);
+      return;
+    }
+    if (msg.type === "file_log" && typeof (msg as { message?: string }).message === "string") {
+      handlers.onFileLog?.((msg as { message: string }).message);
+      return;
+    }
+    if (msg.type === "tool_result") {
+      const tool = typeof (msg as { tool?: string }).tool === "string" ? (msg as { tool: string }).tool : "";
+      const ok = Boolean((msg as { ok?: boolean }).ok);
+      const result =
+        typeof (msg as { result?: unknown }).result === "object" &&
+        (msg as { result?: unknown }).result !== null
+          ? ((msg as { result: Record<string, unknown> }).result as Record<string, unknown>)
+          : {};
+      handlers.onToolResult?.({ tool, ok, result });
       return;
     }
     if (msg.type === "done") {

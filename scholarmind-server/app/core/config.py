@@ -91,6 +91,18 @@ class Settings(BaseSettings):
     edgefn_api_base_url: str = "https://api.edgefn.net/v1"
     edgefn_chat_model: str = "DeepSeek-R1-0528-Qwen3-8B"
 
+    # 对话中本地文件读写；白名单见 FILE_WRITER_ALLOWED_ROOTS
+    file_tools_enabled: bool = True
+    # prompt：模型输出 XML 工具块（兼容 EdgeFN / 未开 native tools 的网关）；native：OpenAI tools API
+    file_tools_mode: str = Field(default="prompt", description="prompt | native")
+    file_tools_max_rounds: int = 6
+    file_read_max_bytes: int = 512 * 1024
+
+    # 联网搜索（Brave 优先；无 Key 时 DuckDuckGo 即时答案）
+    web_search_enabled: bool = True
+    brave_search_api_key: str | None = None
+    web_search_max_results: int = 5
+
     # false（方案 B）：Redis + Celery Worker 异步解析。true 时仅用内存 broker、无 Redis 也可开发。
     celery_task_always_eager: bool = False
     # 留空则 Windows 自动 solo；Linux 默认 prefork。可显式设为 prefork|solo|threads|gevent

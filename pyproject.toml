@@ -7,15 +7,17 @@ dependencies = [
     "scholarmind-server",
     "scholarmind-agent",
     "scholarmind-eval",
+    "scholarmind-mcp",
 ]
 
 [tool.uv.sources]
 scholarmind-server = { workspace = true }
 scholarmind-agent = { workspace = true }
 scholarmind-eval = { workspace = true }
+scholarmind-mcp = { workspace = true }
 
 [tool.uv.workspace]
-members = ["scholarmind-server", "scholarmind-agent", "scholarmind-eval"]
+members = ["scholarmind-server", "scholarmind-agent", "scholarmind-eval", "scholarmind-mcp"]
 
 # 开发时：`uv sync --group dev`（pytest / ruff 等；与各子包 optional dev 互补）
 [dependency-groups]

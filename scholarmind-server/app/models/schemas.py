@@ -12,6 +12,10 @@ class ChatRequest(BaseModel):
     knowledge_base_id: str | None = None
     deep_research: bool = False
     web_search: bool = False
+    file_tools: bool = Field(
+        default=True,
+        description="启用本地文件读写工具（需服务端 file_tools_enabled）",
+    )
     conversation_id: str | None = Field(
         default=None,
         description="不传或空则新建会话；传入已有 id 则续聊并写入 MySQL/Redis/向量索引",

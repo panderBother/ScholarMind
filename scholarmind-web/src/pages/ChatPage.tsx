@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { AssistantMarkdown } from "@/components/AssistantMarkdown";
 import { getAccessToken } from "@/services/auth";
-import { streamChatMessage } from "@/services/chat";
+import { streamChatMessage, type ChatToolResult } from "@/services/chat";
 import {
   type ConversationDto,
   fetchConversation,
@@ -27,8 +27,19 @@ import {
   listConversations,
   setStoredConversationId,
 } from "@/services/conversations";
+import {
+  fetchFileWriterEnabled,
+  fetchWebSearchEnabled,
+  setBuiltinMcpEnabled,
+} from "@/services/mcpTools";
 import { listKnowledgeBases, type KnowledgeBaseDto } from "@/services/knowledgeBases";
 import { mergeThinkingParts, partitionThinkingBlocks } from "@/utils/partitionThinking";
+
+type FileToolLog = {
+  tool: string;
+  ok: boolean;
+  summary: string;
+};
 
 type ChatMessage = {
   id: string;
@@ -37,7 +48,26 @@ type ChatMessage = {
   trace_id?: string;
   streamFinal?: boolean;
   thinkingContent?: string;
+  fileToolLogs?: FileToolLog[];
 };
+
+function summarizeToolResult(payload: ChatToolResult): string {
+  const r = payload.result;
+  if (!payload.ok && typeof r.error === "string") return r.error;
+  if (typeof r.path === "string") {
+    const extra =
+      payload.tool.startsWith("write") && typeof r.bytes_written === "number"
+        ? `（${r.bytes_written} 字节）`
+        : payload.tool === "read_document" && r.truncated
+          ? "（内容已截断）"
+          : "";
+    return `${r.path}${extra}`;
+  }
+  if (Array.isArray(r.allowed_roots)) {
+    return (r.allowed_roots as string[]).slice(0, 3).join("；") + ((r.allowed_roots as string[]).length > 3 ? "…" : "");
+  }
+  return payload.ok ? "完成" : "失败";
+}
 
 type LeftRailTab = "sessions" | "knowledge";
 
@@ -66,6 +96,7 @@ export function ChatPage() {
   const [input, setInput] = useState("");
   const [deepResearch, setDeepResearch] = useState(true);
   const [webSearch, setWebSearch] = useState(false);
+  const [fileTools, setFileTools] = useState(true);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [showThought, setShowThought] = useState(true);
@@ -91,6 +122,12 @@ export function ChatPage() {
     }
     return null;
   }, [messages]);
+
+  useEffect(() => {
+    if (!getAccessToken()) return;
+    void fetchFileWriterEnabled().then(setFileTools).catch(() => undefined);
+    void fetchWebSearchEnabled().then(setWebSearch).catch(() => undefined);
+  }, []);
 
   const loadKbs = useCallback(async () => {
     if (!getAccessToken()) {
@@ -132,7 +169,9 @@ export function ChatPage() {
     setStoredConversationId(conv.id);
     if (conv.knowledge_base_id) setKbId(conv.knowledge_base_id);
     setDeepResearch(conv.deep_research);
-    setWebSearch(conv.web_search);
+    void fetchWebSearchEnabled()
+      .then((mcpOn) => setWebSearch(conv.web_search || mcpOn))
+      .catch(() => setWebSearch(conv.web_search));
     setMessages(
       msgs.map((m) => ({
         id: m.id,
@@ -230,6 +269,7 @@ export function ChatPage() {
           knowledge_base_id: kbId || null,
           deep_research: deepResearch,
           web_search: webSearch,
+          file_tools: fileTools,
           conversation_id: conversationId,
         },
         {
@@ -262,6 +302,21 @@ export function ChatPage() {
               m.map((row) =>
                 row.id === assistantId
                   ? { ...row, content: visible, thinkingContent, streamFinal: false }
+                  : row,
+              ),
+            );
+          },
+          onToolResult: (payload) => {
+            if (!payload.ok) return;
+            const log: FileToolLog = {
+              tool: payload.tool,
+              ok: payload.ok,
+              summary: summarizeToolResult(payload),
+            };
+            setMessages((m) =>
+              m.map((row) =>
+                row.id === assistantId
+                  ? { ...row, fileToolLogs: [...(row.fileToolLogs ?? []), log] }
                   : row,
               ),
             );
@@ -778,6 +833,19 @@ export function ChatPage() {
                     本次未返回可见推理字段（与服务商 / 模型实现有关）。
                   </p>
                 ))}
+              {(m.fileToolLogs ?? []).some((log) => log.ok) ? (
+                <ul className="mb-3 space-y-1.5 rounded-lg border border-emerald-100 bg-emerald-50/80 px-3 py-2 text-xs text-emerald-900">
+                  {(m.fileToolLogs ?? [])
+                    .filter((log) => log.ok)
+                    .map((log, i) => (
+                      <li key={`${log.tool}-${i}`} className="break-all">
+                        <span className="font-medium">{log.tool}</span>
+                        <span className="text-emerald-700"> · </span>
+                        {log.summary}
+                      </li>
+                    ))}
+                </ul>
+              ) : null}
               <AssistantMarkdown markdown={m.content} isStreaming={!(m.streamFinal ?? true)} />
             </div>
           ),
@@ -833,7 +901,24 @@ export function ChatPage() {
             </button>
             <div className="scrollbar-none flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <Toggle label="深度研究" on={deepResearch} onToggle={() => setDeepResearch((v) => !v)} />
-              <Toggle label="联网搜索" on={webSearch} onToggle={() => setWebSearch((v) => !v)} />
+              <Toggle
+                label="联网搜索"
+                on={webSearch}
+                onToggle={() => {
+                  const next = !webSearch;
+                  setWebSearch(next);
+                  void setBuiltinMcpEnabled("web_search", next).catch(() => undefined);
+                }}
+              />
+              <Toggle
+                label="文件读写"
+                on={fileTools}
+                onToggle={() => {
+                  const next = !fileTools;
+                  setFileTools(next);
+                  void setBuiltinMcpEnabled("file_writer", next).catch(() => undefined);
+                }}
+              />
             </div>
             <button
               type="button"

@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
 from app.core.config import settings
+from app.services.file_workspace import FILE_TOOLS_SYSTEM_HINT
 
 
 def _chat_url() -> str:
@@ -39,14 +41,14 @@ def _extract_stream_deltas(obj: dict[str, Any]) -> tuple[str, str]:
     return reasoning, content
 
 
-def _extract_message(resp_json: dict[str, Any]) -> tuple[str, str]:
-    """非流式：返回 (reasoning, content)。"""
+def _extract_message(resp_json: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]]]:
+    """非流式：返回 (reasoning, content, tool_calls)。"""
     choices = resp_json.get("choices")
     if not isinstance(choices, list) or not choices:
-        return "", ""
+        return "", "", []
     msg = choices[0].get("message")
     if not isinstance(msg, dict):
-        return "", ""
+        return "", "", []
     content = msg.get("content")
     text = content if isinstance(content, str) else ""
     reasoning = ""
@@ -54,7 +56,39 @@ def _extract_message(resp_json: dict[str, Any]) -> tuple[str, str]:
         r = msg.get(key)
         if isinstance(r, str):
             reasoning += r
-    return reasoning, text
+    tool_calls = msg.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        tool_calls = []
+    return reasoning, text, tool_calls
+
+
+@dataclass
+class ChatTurnResult:
+    reasoning: str = ""
+    content: str = ""
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+def _base_system_parts(
+    *,
+    deep_research: bool,
+    web_search: bool,
+    file_tools: bool,
+) -> list[str]:
+    parts: list[str] = [
+        "你是 ScholarMind 学术助手，回答简洁、可核对；优先使用 Markdown（标题、列表、代码块）。",
+    ]
+    if deep_research:
+        parts.append("用户开启了「深度研究」：尽量分步推理并给出可验证的依据线索。")
+    if web_search:
+        parts.append(
+            "用户希望获取实时/网页信息：若 system 中已有「联网搜索结果」摘录，请优先依据摘录回答；"
+            "若无摘录再说明无法核实并避免编造链接。",
+        )
+    if file_tools:
+        parts.append(FILE_TOOLS_SYSTEM_HINT)
+    return parts
 
 
 def build_chat_messages(
@@ -63,21 +97,27 @@ def build_chat_messages(
     deep_research: bool,
     web_search: bool,
     kb_context: str | None = None,
+    file_tools: bool = False,
 ) -> list[dict[str, str]]:
-    parts: list[str] = [
-        "你是 ScholarMind 学术助手，回答简洁、可核对；优先使用 Markdown（标题、列表、代码块）。",
-    ]
-    if deep_research:
-        parts.append("用户开启了「深度研究」：尽量分步推理并给出可验证的依据线索。")
-    if web_search:
-        parts.append("用户开启了「联网搜索」：若缺少实时信息请明确说明知识截止日期并避免编造链接。")
+    parts = _base_system_parts(
+        deep_research=deep_research,
+        web_search=web_search,
+        file_tools=file_tools,
+    )
     ctx = (kb_context or "").strip()
     if ctx:
-        parts.append(
-            "用户已选择「知识库」。下列摘录来自其向量检索结果，请优先依据摘录作答；"
-            "引用时请标明摘录序号或页码；摘录不足以回答时请明确说明，勿编造文献细节。\n\n"
-            + ctx,
-        )
+        if "## 联网搜索结果" in ctx:
+            parts.append(
+                "下列材料含知识库检索与/或联网搜索摘录。联网部分请优先用于回答网址、新闻、实时信息；"
+                "知识库部分用于文献与已上传资料。摘录不足时请明确说明，勿编造。\n\n"
+                + ctx,
+            )
+        else:
+            parts.append(
+                "用户已选择「知识库」。下列摘录来自其向量检索结果，请优先依据摘录作答；"
+                "引用时请标明摘录序号或页码；摘录不足以回答时请明确说明，勿编造文献细节。\n\n"
+                + ctx,
+            )
     system = "\n\n".join(parts)
     return [
         {"role": "system", "content": system},
@@ -89,6 +129,7 @@ def build_chat_messages_multi(
     *,
     deep_research: bool,
     web_search: bool,
+    file_tools: bool = False,
     kb_context: str | None,
     memory_summaries: str,
     memory_retrieval: str,
@@ -97,20 +138,25 @@ def build_chat_messages_multi(
     """
     多轮：system 内放稳定块 A（说明+KB）+ B（摘要）+ 检索摘录；其后按序拼接 user/assistant（含当前 user）。
     """
-    parts: list[str] = [
-        "你是 ScholarMind 学术助手，回答简洁、可核对；优先使用 Markdown（标题、列表、代码块）。",
-    ]
-    if deep_research:
-        parts.append("用户开启了「深度研究」：尽量分步推理并给出可验证的依据线索。")
-    if web_search:
-        parts.append("用户开启了「联网搜索」：若缺少实时信息请明确说明知识截止日期并避免编造链接。")
+    parts = _base_system_parts(
+        deep_research=deep_research,
+        web_search=web_search,
+        file_tools=file_tools,
+    )
     ctx = (kb_context or "").strip()
     if ctx:
-        parts.append(
-            "用户已选择「知识库」。下列摘录来自其向量检索结果，请优先依据摘录作答；"
-            "引用时请标明摘录序号或页码；摘录不足以回答时请明确说明，勿编造文献细节。\n\n"
-            + ctx,
-        )
+        if "## 联网搜索结果" in ctx:
+            parts.append(
+                "下列材料含知识库检索与/或联网搜索摘录。联网部分请优先用于回答网址、新闻、实时信息；"
+                "知识库部分用于文献与已上传资料。摘录不足时请明确说明，勿编造。\n\n"
+                + ctx,
+            )
+        else:
+            parts.append(
+                "用户已选择「知识库」。下列摘录来自其向量检索结果，请优先依据摘录作答；"
+                "引用时请标明摘录序号或页码；摘录不足以回答时请明确说明，勿编造文献细节。\n\n"
+                + ctx,
+            )
     summ = (memory_summaries or "").strip()
     if summ:
         parts.append("## 较早轮次摘要（系统自动生成，可能省略细节）\n\n" + summ)
@@ -125,20 +171,12 @@ def build_chat_messages_multi(
     return out
 
 
-async def complete_chat(messages: list[dict[str, str]]) -> tuple[str, str, dict[str, Any]]:
-    """
-    同步补全。返回 (reasoning, content, raw_json)。
-    """
+async def _post_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
     key = settings.edgefn_api_key
     if not key:
         raise RuntimeError("未配置 EDGEFN_API_KEY")
 
-    payload = {
-        "model": settings.edgefn_chat_model,
-        "messages": messages,
-        "stream": False,
-    }
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
         r = await client.post(
             _chat_url(),
             headers={
@@ -163,8 +201,46 @@ async def complete_chat(messages: list[dict[str, str]]) -> tuple[str, str, dict[
 
         if not isinstance(data, dict):
             raise RuntimeError("EdgeFN 响应格式异常")
-        reasoning, content = _extract_message(data)
-        return reasoning, content, data
+        return data
+
+
+async def complete_chat_turn(
+    messages: list[dict[str, Any]],
+    *,
+    tools: list[dict[str, Any]] | None = None,
+) -> ChatTurnResult:
+    """单轮非流式补全，可带 tools；返回正文、推理与 tool_calls。"""
+    payload: dict[str, Any] = {
+        "model": settings.edgefn_chat_model,
+        "messages": messages,
+        "stream": False,
+    }
+    # native 模式才传 tools；且不发送 tool_choice=auto（EdgeFN/vLLM 未开启时会 400）
+    if tools:
+        payload["tools"] = tools
+    data = await _post_chat_payload(payload)
+    reasoning, content, tool_calls = _extract_message(data)
+    return ChatTurnResult(
+        reasoning=reasoning,
+        content=content,
+        tool_calls=tool_calls,
+        raw=data,
+    )
+
+
+async def complete_chat(messages: list[dict[str, str]]) -> tuple[str, str, dict[str, Any]]:
+    """
+    同步补全。返回 (reasoning, content, raw_json)。
+    """
+    turn = await complete_chat_turn(messages)
+    return turn.reasoning, turn.content, turn.raw
+
+
+def iter_text_chunks(text: str, *, chunk_size: int = 48) -> list[str]:
+    """将最终正文切成小块，便于 SSE 伪流式输出。"""
+    if not text:
+        return []
+    return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 
 async def iter_chat_stream(messages: list[dict[str, str]]) -> AsyncIterator[tuple[str, str]]:
