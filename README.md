@@ -8,61 +8,49 @@
 
 ## 界面预览
 
+> 在 Cursor / VS Code 中请用 **Markdown 预览** 查看截图：`Ctrl+Shift+V`（Mac：`Cmd+Shift+V`），或右上角点击预览图标。源码模式下只会看到路径，不会渲染图片。
+
 ### 对话与研究
 
 基于所选知识库的 RAG 流式问答；支持会话历史、深度研究 / 联网搜索 / 文件读写开关，以及「提炼到知识库」「生成报告」等快捷操作。
 
-<p align="center">
-  <img src="assets/01-chat-research.png" alt="对话与研究" width="920" />
-</p>
+![对话与研究](./assets/01-chat-research.png)
 
 ### 知识库
 
 按课题创建与管理多个私有知识库，展示文献数量、存储与更新时间；支持创建、重命名与删除。
 
-<p align="center">
-  <img src="assets/02-knowledge-bases.png" alt="知识库" width="920" />
-</p>
+![知识库](./assets/02-knowledge-bases.png)
 
 ### 文献管理 · 文献视图
 
 选择目标知识库上传 PDF（单文件 ≤ 50MB，单次最多 20 个），查看解析状态（pending → processing → done / failed），失败可重试；支持 Celery 异步解析或本机后台线程模式。
 
-<p align="center">
-  <img src="assets/03-documents-pdf.png" alt="文献视图" width="920" />
-</p>
+![文献视图](./assets/03-documents-pdf.png)
 
 ### 文献管理 · 条目视图
 
 除 PDF 原文外，还可管理从对话提炼、URL 采集等来源的 **知识条目**（草稿 / 已发布 / 已归档），支持预览、编辑与删除。
 
-<p align="center">
-  <img src="assets/04-documents-entries.png" alt="条目视图" width="920" />
-</p>
+![条目视图](./assets/04-documents-entries.png)
 
 ### 报告
 
 由对话一键生成结构化研究报告，展示摘要与引用数量，可打开详情或删除。
 
-<p align="center">
-  <img src="assets/05-reports.png" alt="报告" width="920" />
-</p>
+![报告](./assets/05-reports.png)
 
 ### 评估看板
 
 RAGAS 指标（忠实度、答案相关性、上下文召回 / 精准）趋势与版本对比；当前为 **UI 示意**，真实数据待评估流水线接入。
 
-<p align="center">
-  <img src="assets/06-evaluation-dashboard.png" alt="评估看板" width="920" />
-</p>
+![评估看板](./assets/06-evaluation-dashboard.png)
 
 ### 工具与集成
 
 内置 MCP 工具开关（联网搜索、本地文件读写等），并支持从 Cursor / Claude 等环境导入外部 `mcp.json` 配置。
 
-<p align="center">
-  <img src="assets/07-tools-mcp.png" alt="工具与集成" width="920" />
-</p>
+![工具与集成](./assets/07-tools-mcp.png)
 
 ---
 
