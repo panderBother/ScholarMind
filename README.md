@@ -1,17 +1,99 @@
 # ScholarMind
 
-ScholarMind 是面向科研与学术场景的「私有文献知识库 + RAG 检索对话」一体化单仓：用户可创建知识库、上传 PDF 文献，由后端完成解析与切块，并写入向量与全文关键词索引，在对话页中基于检索证据获得可核对、可流式呈现的回答。工程上前端采用 React（Vite、Tailwind），后端采用 FastAPI，覆盖账户与知识库、文献生命周期、索引构建与对接外部推理的 SSE 链路等核心纵向能力；Agent 编排、MCP 工具、评估看板与报告导出等将按产品规划迭代接入。功能边界、里程碑与落地步骤以 **[PRD v2.0](docs/ScholarMind_PRD_v2.0.md)**（[`ScholarMind_PRD_v2.0.docx`](docs/ScholarMind_PRD_v2.0.docx)）及 **[开发流程与步骤](docs/ScholarMind_开发流程与步骤_v1.md)** 为准。
+**ScholarMind** 是面向科研与学术场景的 **AI Native 私有知识库平台**：用户注册登录后，可创建多个知识库、上传 PDF 文献并完成自动解析与索引，在对话页基于所选知识库进行 **Hybrid RAG 检索增强问答**，并将对话提炼为结构化条目、生成研究报告。工程上采用 **React（Vite + Tailwind）+ FastAPI** 单仓架构，覆盖账户鉴权、知识库与文献生命周期、向量 + 全文双索引、SSE 流式对话、MCP 工具集成等核心能力。
+
+> 功能边界、里程碑与验收标准以 **[PRD v2.0](docs/ScholarMind_PRD_v2.0.md)**（[`ScholarMind_PRD_v2.0.docx`](docs/ScholarMind_PRD_v2.0.docx)）及 **[开发流程与步骤](docs/ScholarMind_开发流程与步骤_v1.md)** 为准。
 
 ---
 
-## 项目背景
+## 界面预览
+
+### 对话与研究
+
+基于所选知识库的 RAG 流式问答；支持会话历史、深度研究 / 联网搜索 / 文件读写开关，以及「提炼到知识库」「生成报告」等快捷操作。
+
+<p align="center">
+  <img src="assets/01-chat-research.png" alt="对话与研究" width="920" />
+</p>
+
+### 知识库
+
+按课题创建与管理多个私有知识库，展示文献数量、存储与更新时间；支持创建、重命名与删除。
+
+<p align="center">
+  <img src="assets/02-knowledge-bases.png" alt="知识库" width="920" />
+</p>
+
+### 文献管理 · 文献视图
+
+选择目标知识库上传 PDF（单文件 ≤ 50MB，单次最多 20 个），查看解析状态（pending → processing → done / failed），失败可重试；支持 Celery 异步解析或本机后台线程模式。
+
+<p align="center">
+  <img src="assets/03-documents-pdf.png" alt="文献视图" width="920" />
+</p>
+
+### 文献管理 · 条目视图
+
+除 PDF 原文外，还可管理从对话提炼、URL 采集等来源的 **知识条目**（草稿 / 已发布 / 已归档），支持预览、编辑与删除。
+
+<p align="center">
+  <img src="assets/04-documents-entries.png" alt="条目视图" width="920" />
+</p>
+
+### 报告
+
+由对话一键生成结构化研究报告，展示摘要与引用数量，可打开详情或删除。
+
+<p align="center">
+  <img src="assets/05-reports.png" alt="报告" width="920" />
+</p>
+
+### 评估看板
+
+RAGAS 指标（忠实度、答案相关性、上下文召回 / 精准）趋势与版本对比；当前为 **UI 示意**，真实数据待评估流水线接入。
+
+<p align="center">
+  <img src="assets/06-evaluation-dashboard.png" alt="评估看板" width="920" />
+</p>
+
+### 工具与集成
+
+内置 MCP 工具开关（联网搜索、本地文件读写等），并支持从 Cursor / Claude 等环境导入外部 `mcp.json` 配置。
+
+<p align="center">
+  <img src="assets/07-tools-mcp.png" alt="工具与集成" width="920" />
+</p>
+
+---
+
+## 产品定位
 
 | 维度 | 说明 |
 |------|------|
-| **产品目标** | 研究问题 → 私有 RAG（可选公开 MCP）→ 可核对、结构化的回答与报告线索 |
-| **典型用户** | 需要管理论文/笔记、希望对「自己的材料」提问并得到带依据回答的研究者或团队 |
-| **技术原则（PRD）** | FastAPI、异步任务、向量检索 + BM25、MCP、后续 LangGraph 编排等；关系型库采用 **MySQL** |
-| **当前阶段** | 已完成 **账户与知识库、文献上传与解析入库、基于知识库的流式对话（EdgeFN）** 等 P0 闭环的大部分「纵向切片」；Agent 全链路、MCP、评估看板、报告导出等仍为规划或占位 |
+| **产品目标** | 研究问题 → 私有 RAG（可选 MCP 扩展）→ 可核对、结构化的回答与报告 |
+| **典型用户** | 需要管理论文 / 笔记、希望对「自己的材料」提问并得到带依据回答的研究者或团队 |
+| **技术原则** | FastAPI、异步任务、Chroma 向量 + Whoosh BM25、MCP、MySQL 多租户隔离 |
+| **当前阶段** | P0 纵向切片已基本贯通：账户 → 知识库 → 文献入库 → 对话 RAG → 条目 / 报告；评估流水线与 LangGraph 深度编排仍在迭代 |
+
+---
+
+## 典型工作流
+
+```mermaid
+flowchart LR
+  A[注册 / 登录] --> B[创建知识库]
+  B --> C[上传 PDF / 采集 URL]
+  C --> D[异步解析与双索引]
+  D --> E[对话页选择知识库提问]
+  E --> F[流式 RAG 回答]
+  F --> G[提炼条目 / 生成报告]
+  G --> H[条目发布后可被检索引用]
+```
+
+1. **入库**：PDF 上传后由 Worker 抽取文本、切块、Embedding，写入 Chroma + Whoosh。
+2. **问答**：对话页选定知识库，后端检索相关片段注入 Prompt，SSE 流式返回。
+3. **沉淀**：对话结果可提炼为知识条目，或一键生成带引用的研究报告。
+4. **扩展**：在「工具与集成」中启用联网搜索、文件读写或导入外部 MCP。
 
 ---
 
@@ -19,11 +101,10 @@ ScholarMind 是面向科研与学术场景的「私有文献知识库 + RAG 检�
 
 | 目录 | 说明 |
 |------|------|
-| `scholarmind-server/` | **FastAPI** 后端：JWT 鉴权、知识库与文献 CRUD、PDF 入库与解析任务、Chroma + Whoosh 索引、对接 EdgeFN 的 **SSE 流式对话** |
-| `scholarmind-web/` | **React + Vite + Tailwind** 前端：登录、知识库、文献列表、对话页（Streamdown 流式 Markdown + Shiki 代码高亮）等 |
-| `docs/` | 工程文档：开发流程与 PRD 阶段映射、**[对话记忆与上下文技术方案](docs/ScholarMind_对话记忆与上下文技术方案_v1.md)**（MySQL / Redis / 向量库 / 摘要与默认参数 / Prompt KV 缓存）、**[课题最高规格执行流程](docs/ScholarMind_课题最高规格执行流程_v1.md)**（三角色 RBAC、前后台、知识审核发布、条目生命周期、混合检索、专家审核、收藏与建议等）等 |
-
-其他 PRD 中规划的目录（如独立 Agent 服务、MCP 包、评估流水线）若在仓库中出现，以各子目录 README 或代码注释为准逐步接线。
+| [`scholarmind-server/`](scholarmind-server/) | **FastAPI** 后端：JWT 鉴权、知识库 / 文献 / 条目 / 报告 API、PDF 解析任务、Chroma + Whoosh 索引、SSE 流式对话、MCP 工具 |
+| [`scholarmind-web/`](scholarmind-web/) | **React + Vite + Tailwind** 前端：登录、知识库、文献与条目、对话、报告、工具、设置等页面 |
+| [`docs/`](docs/) | 工程文档：PRD、开发流程、对话记忆方案、课题执行流程等 |
+| [`assets/`](assets/) | README 界面截图（与根目录 README 同级引用） |
 
 ---
 
@@ -31,24 +112,40 @@ ScholarMind 是面向科研与学术场景的「私有文献知识库 + RAG 检�
 
 ### 后端（`scholarmind-server`）
 
-- **健康检查**：`GET /api/v1/health`
-- **用户**：邮箱注册 / 登录，**JWT** 访问令牌
-- **知识库**：创建、列表、数量上限等（多租户按用户隔离）
-- **文献**：PDF 上传、列表、状态（pending / processing / done / failed）、失败重试；本地存储抽象，便于后续换 OSS
-- **解析流水线**：PDF 文本抽取 → 切块 → **嵌入**（支持 `EMBEDDING_MODE`：`bge` 本地、`http` 云端 OpenAI 兼容 embeddings、`hash` 测试）→ **Chroma** 向量写入 + **Whoosh** 关键词索引
-- **对话**：`POST /api/v1/chat/stream`，**SSE** 推送 `trace_id`、`thinking_delta`（若上游提供推理字段）、`delta`、`done`；系统提示中可注入所选知识库的 **检索摘录**（RAG 上下文）
-- **任务执行**：支持 **Celery + Redis** 或本机 **`INGEST_BACKGROUND_THREAD=true` + FastAPI BackgroundTasks**（便于无 Worker 时开发）
+| 模块 | 能力 |
+|------|------|
+| **鉴权** | 邮箱注册 / 登录，JWT 访问令牌 |
+| **知识库** | 创建、列表、重命名、删除（多租户按 `user_id` 隔离） |
+| **文献** | PDF 上传、列表、预览、删除、失败重试；本地存储抽象 |
+| **解析流水线** | PDF 文本抽取 → 切块 → Embedding（`bge` / `http` / `hash`）→ Chroma + Whoosh |
+| **知识条目** | 对话提炼、URL 采集、草稿 / 发布 / 归档生命周期 |
+| **对话** | `POST /api/v1/chat/stream`，SSE 推送 `trace_id`、`thinking_delta`、`delta`、`done`；注入 RAG 检索摘录 |
+| **报告** | 由对话生成结构化报告，列表 / 详情 / 导出 Markdown |
+| **MCP** | 内置联网搜索、文件读写等工具配置与开关 |
+| **任务执行** | Celery + Redis，或 `INGEST_BACKGROUND_THREAD=true` 本机后台模式 |
 
 ### 前端（`scholarmind-web`）
 
-- **路由**：`/login`、`/chat`、`/knowledge-bases`、`/documents`、`/reports`、`/evaluation`、`/tools`、`/settings` 等（部分页面为占位或后续迭代）
-- **对话页**：对接后端 SSE；**思维链** 与正文中的 `<think>` / `<think>` 等标签做拆分展示；正文使用 **[Streamdown](https://streamdown.ai/)** + `@streamdown/code`（**Shiki** 语法高亮）与 `@streamdown/cjk`（中文排版）
+| 路由 | 页面 |
+|------|------|
+| `/login` | 登录 / 注册 |
+| `/chat` | 对话与研究（会话列表、知识库切换、流式 Markdown） |
+| `/knowledge-bases` | 知识库管理 |
+| `/documents` | 文献视图 + 条目视图 |
+| `/documents/items/:kbId/:itemId` | 条目详情与编辑 |
+| `/reports`、`/reports/:id` | 报告列表与详情 |
+| `/evaluation` | RAG 评估看板（示意数据） |
+| `/tools` | MCP 工具与集成 |
+| `/settings` | 账户与偏好设置 |
 
-### 尚未完成或仅占位（与 PRD 对齐的预期）
+对话正文使用 **[Streamdown](https://streamdown.ai/)** + Shiki 代码高亮与 CJK 排版优化。
 
-- **LangGraph** 深度编排、**MCP** 工具链、执行过程 SSE 面板与完整 **溯源/导出**
-- **Milvus** 生产集群策略、**Rerank**、RAGAS 评估流水线与真实看板数据
-- **Google OAuth**、对象存储生产切换等（见 `docs/ScholarMind_开发流程与步骤_v1.md`）
+### 规划中 / 占位
+
+- LangGraph 深度 Agent 编排与执行过程 SSE 面板
+- RAGAS 评估流水线对接真实看板数据
+- 文献 PDF 页级引用跳转、Milvus 生产集群、Rerank
+- Google OAuth、对象存储生产切换
 
 ---
 
@@ -56,9 +153,9 @@ ScholarMind 是面向科研与学术场景的「私有文献知识库 + RAG 检�
 
 ### 1. 准备环境
 
-- **MySQL 8.x**：创建数据库与用户，配置连接串
-- **Redis**（若使用 Celery Worker 而非纯本机后台任务）：默认 `redis://127.0.0.1:6379/0`
-- **EdgeFN（或兼容 OpenAI 的网关）**：用于对话与（可选）云端向量 `embeddings`
+- **MySQL 8.x**：创建数据库与用户
+- **Redis**（使用 Celery Worker 时）：默认 `redis://127.0.0.1:6379/0`
+- **EdgeFN（或兼容 OpenAI 的网关）**：对话与（可选）云端 Embeddings
 
 ### 2. 后端
 
@@ -68,42 +165,46 @@ cp env.example .env
 # 编辑 .env：DATABASE_URL、JWT_SECRET、EDGEFN_API_KEY 等
 
 uv sync
-uv run alembic upgrade head   # 若已配置迁移
+uv run alembic upgrade head
 uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 - API 文档：<http://127.0.0.1:8000/docs>
-- 本机**不跑 Celery** 时：在 `.env` 中设置 `INGEST_BACKGROUND_THREAD=true`，并阅读 `env.example` 中关于 `EMBEDDING_MODE` 的说明（云端嵌入可避免本机下载大模型）
+- **不跑 Celery** 时：`.env` 设置 `INGEST_BACKGROUND_THREAD=true`
+- **跑 Celery** 时：另开终端执行 `uv run celery -A app.workers.celery_app worker -l info`，且 Worker 与 API 共用同一 `.env`
 
 ### 3. 前端
 
 ```bash
 cd scholarmind-web
 pnpm install   # 或 npm install
-pnpm dev       # 默认与 Vite 开发服务器端口一致，请按控制台提示访问
+pnpm dev       # 默认 http://localhost:5173
 ```
 
-开发环境下，前端通过 **`vite.config.ts` 中的 `server.proxy`** 将 `/api` 转发到 `http://127.0.0.1:8000`，与后端默认端口一致即可；生产部署时需自行配置同源反向代理或改写请求基地址。
+开发环境通过 `vite.config.ts` 将 `/api` 代理到 `http://127.0.0.1:8000`。
 
-### 4. 代码块高亮（前端）
+### 4. 首次使用
 
-助手回复需使用 **带语言的 fenced code**（例如 ` ```typescript `），并确保已引入 `streamdown/styles.css`（本仓库在 `scholarmind-web/src/index.css` 中已 `@import`）。Shiki 会按需加载高亮资源；若高亮不生效，请检查浏览器控制台网络错误与是否使用了正确的语言标识。
+1. 打开 <http://localhost:5173/login> 注册并登录
+2. 在「知识库」创建库，进入「文献管理」上传 PDF
+3. 等待解析完成后，在「对话与研究」选择该库开始提问
 
 ---
 
 ## 主要环境变量（后端）
 
-完整说明见 **`scholarmind-server/env.example`**。常用项包括：
+完整说明见 [`scholarmind-server/env.example`](scholarmind-server/env.example)。
 
 | 变量 | 作用 |
 |------|------|
 | `DATABASE_URL` | MySQL 异步连接（`mysql+asyncmy://...`） |
-| `JWT_SECRET` | 签发 JWT 的密钥 |
+| `JWT_SECRET` | JWT 签发密钥 |
 | `STORAGE_LOCAL_ROOT` | 上传文件本地根路径 |
 | `CHROMA_DATA_PATH` / `WHOOSH_INDEX_ROOT` | 向量与全文索引目录 |
 | `EDGEFN_API_KEY` / `EDGEFN_API_BASE_URL` / `EDGEFN_CHAT_MODEL` | 对话模型网关 |
-| `EMBEDDING_MODE` | `bge` \| `http` \| `hash`；`http` 时可与 EdgeFN 共用 base/key |
+| `EMBEDDING_MODE` | `bge` \| `http` \| `hash` |
 | `INGEST_BACKGROUND_THREAD` | `true` 时在本进程内异步解析（开发友好） |
+| `REDIS_URL` / `CELERY_TASK_ALWAYS_EAGER` | Celery 任务队列 |
 
 **切勿**将真实 `.env` 或密钥提交到版本库。
 
@@ -117,18 +218,23 @@ uv sync --dev
 uv run pytest tests/ -q
 ```
 
-前端：`pnpm run build` 做 TypeScript 与生产构建校验。
+```bash
+cd scholarmind-web
+pnpm run build
+```
 
 ---
 
 ## 相关文档
 
-- [ScholarMind PRD v2.0](docs/ScholarMind_PRD_v2.0.md) — 产品需求规格（升级自 KnowMind AI PRD v2.0，与仓库实现对齐）
-- [ScholarMind 开发流程与步骤 v1.2](docs/ScholarMind_开发流程与步骤_v1.md) — 与 PRD 模块、里程碑、技术选型的映射
-- [scholarmind-server README](scholarmind-server/README.md) — 服务端补充说明（若与本文冲突，以根目录本文与 `env.example` 为准）
+- [ScholarMind PRD v2.0](docs/ScholarMind_PRD_v2.0.md) — 产品需求规格
+- [ScholarMind 开发流程与步骤 v1.2](docs/ScholarMind_开发流程与步骤_v1.md) — 模块与里程碑映射
+- [对话记忆与上下文技术方案](docs/ScholarMind_对话记忆与上下文技术方案_v1.md)
+- [课题最高规格执行流程](docs/ScholarMind_课题最高规格执行流程_v1.md)
+- [scholarmind-server README](scholarmind-server/README.md)
 
 ---
 
 ## 许可证与贡献
 
-许可证以各子包声明为准；贡献前请阅读 PRD 与 `docs/` 下的流程文档，保持 **纵向切片** 与里程碑对齐。
+许可证以各子包声明为准。贡献前请阅读 PRD 与 `docs/` 下的流程文档，保持 **纵向切片** 与里程碑对齐。
