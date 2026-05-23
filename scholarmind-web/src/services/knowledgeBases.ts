@@ -51,6 +51,16 @@ export async function createKnowledgeBase(name: string): Promise<KnowledgeBaseDt
   return (await res.json()) as KnowledgeBaseDto;
 }
 
+export async function updateKnowledgeBase(id: string, name: string): Promise<KnowledgeBaseDto> {
+  const res = await fetch(`${BASE}/knowledge-bases/${id}`, {
+    method: "PATCH",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return (await res.json()) as KnowledgeBaseDto;
+}
+
 export async function deleteKnowledgeBase(id: string): Promise<void> {
   const res = await fetch(`${BASE}/knowledge-bases/${id}`, {
     method: "DELETE",

@@ -77,6 +77,13 @@ class Settings(BaseSettings):
     # RAG：对话前按 kb_id 检索片段条数
     rag_top_k: int = 8
 
+    # 对外 HTTP：false=不走系统 HTTP_PROXY（Windows 代理下易出现 SSL UNEXPECTED_EOF）
+    http_trust_env: bool = False
+    http_max_retries: int = 3
+
+    # 知识蒸馏 Demo 模式（降低触发阈值，便于答辩演示）
+    distill_demo_mode: bool = True
+
     # true：上传后在 API 进程内起 daemon 线程解析（无需 Redis/Celery Worker，适合本机开发）；生产请 false 并用 Worker
     ingest_background_thread: bool = False
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from starlette.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,6 +7,12 @@ from app.api.deps import get_current_user_id
 from app.db.session import get_db
 from app.models.orm import Conversation
 from app.schemas.conversation import ChatMessageOut, ConversationCreate, ConversationOut
+from app.schemas.knowledge_item import ExtractKnowledgeRequest
+from app.schemas.report import GenerateReportRequest, ResearchReportOut
+from app.services import knowledge_extract_service as extract_svc
+from app.services import report_service as report_svc
+from app.services.distill_service import DistillError
+from app.services.report_service import ReportError
 from app.services.conversation_service import create_conversation, get_conversation_for_user, load_messages_ordered
 
 router = APIRouter()
@@ -79,3 +85,45 @@ async def delete_conversation(
     await session.delete(conv)
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{conversation_id}/extract-knowledge")
+async def extract_knowledge(
+    conversation_id: str,
+    body: ExtractKnowledgeRequest,
+    session: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    try:
+        drafts = await extract_svc.extract_knowledge_drafts(
+            session,
+            user_id,
+            conversation_id,
+            kb_id=body.kb_id,
+            message_limit=body.message_limit,
+        )
+    except DistillError as e:
+        raise HTTPException(e.status_code, detail=e.message) from e
+    return {"drafts": drafts}
+
+
+@router.post("/{conversation_id}/generate-report", response_model=ResearchReportOut)
+async def generate_report(
+    conversation_id: str,
+    body: GenerateReportRequest,
+    session: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    try:
+        row = await report_svc.generate_report_from_conversation(
+            session,
+            user_id,
+            conversation_id,
+            kb_id=body.kb_id,
+            title_override=body.title,
+        )
+    except ReportError as e:
+        raise HTTPException(e.status_code, detail=e.message) from e
+    except RuntimeError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
+    return report_svc.report_to_schema(row)

@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
+import { UiProvider } from "@/components/ui/UiProvider";
 import App from "./App";
 import "./index.css";
 
@@ -8,7 +9,9 @@ import "./index.css";
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <BrowserRouter>
-      <App />
+      <UiProvider>
+        <App />
+      </UiProvider>
     </BrowserRouter>
   </React.StrictMode>,
 );

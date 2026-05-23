@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import UTC, datetime
 
 from app.core.config import get_settings
 from app.db.sync_session import session_scope
@@ -10,7 +11,9 @@ from app.ingest.embedding import embed_texts
 from app.ingest.pdf import extract_pdf_pages
 from app.indexing.vector_factory import get_vector_index
 from app.indexing.whoosh_index import whoosh_upsert_chunks
-from app.models.orm import Document, KnowledgeBase, new_uuid
+from app.models.orm import Document, KnowledgeBase, KnowledgeItem, new_uuid
+from app.services.item_indexing import build_index_row
+from app.services.knowledge_category_service import get_or_create_default_category_sync
 from app.storage.local import LocalBlobStorage
 from app.workers.celery_app import celery_app
 
@@ -73,6 +76,7 @@ def process_document_once(document_id: str) -> bool:
         user_id = doc.user_id
         storage_key = doc.storage_key
         doc_pk = doc.id
+        filename = doc.filename
 
     settings = get_settings()
     storage = LocalBlobStorage(settings.storage_local_root)
@@ -85,19 +89,51 @@ def process_document_once(document_id: str) -> bool:
     texts = [ch.text for ch in chunks]
     log.info("ingest %s: chunks=%s embedding", document_id, len(texts))
     vectors = embed_texts(texts) if texts else []
+    now = datetime.now(UTC)
     rows: list[dict] = []
+    item_records: list[KnowledgeItem] = []
+
+    with session_scope() as s:
+        default_category_id = get_or_create_default_category_sync(s, kb_id, user_id)
+
+    base_name = (filename or "document").rsplit(".", 1)[0][:80]
     for ch, vec in zip(chunks, vectors, strict=True):
         cid = new_uuid()
+        item_id = new_uuid()
+        page_no = int(ch.page) + 1
+        title = f"{base_name} · 第 {page_no} 页"
+        snippet = (ch.text or "").strip()
+        content = snippet[:8000] if snippet else "（空白页）"
         rows.append(
-            {
-                "chunk_id": cid,
-                "kb_id": kb_id,
-                "user_id": user_id,
-                "doc_id": doc_pk,
-                "page": ch.page,
-                "text": ch.text,
-                "vector": vec,
-            }
+            build_index_row(
+                chunk_id=cid,
+                kb_id=kb_id,
+                user_id=user_id,
+                doc_id=doc_pk,
+                item_id=item_id,
+                page=ch.page,
+                text=ch.text,
+                vector=vec,
+                lifecycle_status="published",
+            )
+        )
+        item_records.append(
+            KnowledgeItem(
+                id=item_id,
+                kb_id=kb_id,
+                user_id=user_id,
+                document_id=doc_pk,
+                category_id=default_category_id,
+                source_type="document",
+                title=title[:200],
+                content=content,
+                lifecycle_status="published",
+                access_level="internal",
+                source=filename,
+                chunk_id=cid,
+                page=ch.page,
+                published_at=now,
+            )
         )
 
     log.info("ingest %s: upserting %s chunks to vector + whoosh", document_id, len(rows))
@@ -117,6 +153,8 @@ def process_document_once(document_id: str) -> bool:
         doc.chunk_count = len(rows)
         if title:
             doc.title = title
+        for item in item_records:
+            s.add(item)
         kb = s.get(KnowledgeBase, doc.kb_id)
         if kb is not None:
             kb.doc_count = int(kb.doc_count or 0) + 1

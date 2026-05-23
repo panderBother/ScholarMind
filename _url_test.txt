@@ -1,0 +1,5 @@
+﻿html len 59934
+trafilatura md 1322
+trafilatura txt 1275
+body 667
+plain parser 17522

@@ -21,12 +21,12 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({ markdown, isS
   return (
     <div className="streamdown-chat-root text-sm leading-relaxed text-slate-800 [&_.streamdown]:max-w-none">
       <Streamdown
-        mode="streaming"
+        mode={isStreaming ? undefined : "static"}
         plugins={plugins}
         isAnimating={isStreaming}
         shikiTheme={["github-light", "github-dark"]}
         controls={{ code: { copy: true, download: true } }}
-        className="streamdown-chat"
+        className={isStreaming ? "streamdown-chat" : "streamdown-static"}
       >
         {markdown}
       </Streamdown>

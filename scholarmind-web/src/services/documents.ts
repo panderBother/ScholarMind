@@ -71,3 +71,28 @@ export async function uploadDocuments(kbId: string, files: File[]): Promise<Docu
   if (!res.ok) throw new Error(await parseError(res));
   return (await res.json()) as DocumentUploadResult;
 }
+
+export async function deleteDocument(kbId: string, docId: string): Promise<void> {
+  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/documents/${docId}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+}
+
+export async function getDocument(kbId: string, docId: string): Promise<DocumentDto> {
+  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/documents/${docId}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return (await res.json()) as DocumentDto;
+}
+
+/** 带鉴权拉取 PDF，用于 iframe / object 预览 */
+export async function fetchDocumentPdfBlob(kbId: string, docId: string): Promise<Blob> {
+  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/documents/${docId}/file`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.blob();
+}

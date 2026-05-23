@@ -47,6 +47,26 @@ async def create_knowledge_base(session: AsyncSession, user_id: str, name: str) 
     return kb
 
 
+async def get_knowledge_base(session: AsyncSession, user_id: str, kb_id: str) -> KnowledgeBase:
+    kb = await session.get(KnowledgeBase, kb_id)
+    if kb is None or kb.user_id != user_id:
+        raise KnowledgeBaseError("知识库不存在", 404)
+    return kb
+
+
+async def update_knowledge_base(
+    session: AsyncSession, user_id: str, kb_id: str, name: str
+) -> KnowledgeBase:
+    kb = await get_knowledge_base(session, user_id, kb_id)
+    name = name.strip()
+    if not name:
+        raise KnowledgeBaseError("知识库名称不能为空", 400)
+    kb.name = name
+    await session.commit()
+    await session.refresh(kb)
+    return kb
+
+
 async def delete_knowledge_base(session: AsyncSession, user_id: str, kb_id: str) -> None:
     kb = await session.get(KnowledgeBase, kb_id)
     if kb is None or kb.user_id != user_id:

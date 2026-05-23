@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { BookOpen, LayoutGrid, List, Plus, Search, Trash2 } from "lucide-react";
+import { BookOpen, LayoutGrid, List, Plus, Search } from "lucide-react";
 
+import { ActionIcons } from "@/components/ui/ActionIcons";
+import { FormDialog } from "@/components/ui/FormDialog";
+import { useUi } from "@/components/ui/UiProvider";
 import { getAccessToken } from "@/services/auth";
 import {
   createKnowledgeBase,
   deleteKnowledgeBase,
   listKnowledgeBases,
+  updateKnowledgeBase,
   type KnowledgeBaseDto,
 } from "@/services/knowledgeBases";
 
@@ -22,17 +26,21 @@ function formatDate(iso: string): string {
   }
 }
 
+type FormMode = "create" | "edit" | null;
+
 /**
  * 知识库管理：桌面栅格；移动端顶栏标题 + 搜索/筛选/视图切换 + 卡片（文献/大小/更新 + 菜单）。
  */
 export function KnowledgeBasesPage() {
   const nav = useNavigate();
+  const { confirm, message } = useUi();
   const [view, setView] = useState<"grid" | "list">("grid");
   const [items, setItems] = useState<KnowledgeBaseDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showCreate, setShowCreate] = useState(false);
-  const [newName, setNewName] = useState("");
+  const [formMode, setFormMode] = useState<FormMode>(null);
+  const [editingKb, setEditingKb] = useState<KnowledgeBaseDto | null>(null);
+  const [formName, setFormName] = useState("");
   const [saving, setSaving] = useState(false);
   const [query, setQuery] = useState("");
 
@@ -67,31 +75,70 @@ export function KnowledgeBasesPage() {
     void load();
   }, [load]);
 
-  const onCreate = async () => {
-    const name = newName.trim();
-    if (!name) return;
+  const openCreate = () => {
+    setEditingKb(null);
+    setFormName("");
+    setFormMode("create");
+  };
+
+  const openEdit = (kb: KnowledgeBaseDto) => {
+    setEditingKb(kb);
+    setFormName(kb.name);
+    setFormMode("edit");
+  };
+
+  const closeForm = () => {
+    setFormMode(null);
+    setEditingKb(null);
+    setFormName("");
+  };
+
+  const onSave = async () => {
+    const name = formName.trim();
+    if (!name) {
+      message.warning("请输入知识库名称");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      const kb = await createKnowledgeBase(name);
-      setItems((prev) => [kb, ...prev]);
-      setNewName("");
-      setShowCreate(false);
+      if (formMode === "edit" && editingKb) {
+        const kb = await updateKnowledgeBase(editingKb.id, name);
+        setItems((prev) => prev.map((k) => (k.id === kb.id ? kb : k)));
+        message.success("知识库已更新");
+      } else {
+        const kb = await createKnowledgeBase(name);
+        setItems((prev) => [kb, ...prev]);
+        message.success("知识库已创建");
+      }
+      closeForm();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "创建失败");
+      const msg = e instanceof Error ? e.message : "保存失败";
+      setError(msg);
+      message.error(msg);
     } finally {
       setSaving(false);
     }
   };
 
   const onDelete = async (id: string, title: string) => {
-    if (!window.confirm(`确定删除知识库「${title}」？`)) return;
+    const ok = await confirm({
+      title: "删除知识库",
+      message: `确定删除知识库「${title}」？\n删除后其中的文献与条目将无法恢复。`,
+      confirmText: "删除",
+      cancelText: "取消",
+      type: "danger",
+    });
+    if (!ok) return;
     setError(null);
     try {
       await deleteKnowledgeBase(id);
       setItems((prev) => prev.filter((k) => k.id !== id));
+      message.success("已删除");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "删除失败");
+      const msg = e instanceof Error ? e.message : "删除失败";
+      setError(msg);
+      message.error(msg);
     }
   };
 
@@ -101,7 +148,7 @@ export function KnowledgeBasesPage() {
         <h1 className="text-lg font-semibold text-slate-900">知识库</h1>
         <button
           type="button"
-          onClick={() => setShowCreate(true)}
+          onClick={openCreate}
           className="flex h-10 w-10 items-center justify-center rounded-full bg-primary text-white shadow-md hover:bg-primary-hover"
           aria-label="创建知识库"
         >
@@ -126,7 +173,7 @@ export function KnowledgeBasesPage() {
           </div>
           <button
             type="button"
-            onClick={() => setShowCreate(true)}
+            onClick={openCreate}
             className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary-hover"
           >
             <Plus className="h-4 w-4" />
@@ -135,7 +182,6 @@ export function KnowledgeBasesPage() {
         </div>
       </header>
 
-      {/* 移动端：搜索 + 筛选 + 视图 */}
       <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center lg:hidden">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
@@ -181,41 +227,6 @@ export function KnowledgeBasesPage() {
         </div>
       </div>
 
-      {showCreate ? (
-        <div className="mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm lg:mb-6">
-          <p className="mb-2 text-sm font-medium text-slate-800">新建知识库</p>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <input
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              maxLength={50}
-              placeholder="名称（最多 50 字）"
-              className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none ring-primary focus:border-primary focus:ring-2"
-            />
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={saving}
-                onClick={() => void onCreate()}
-                className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary-hover disabled:opacity-60"
-              >
-                {saving ? "保存中…" : "保存"}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowCreate(false);
-                  setNewName("");
-                }}
-                className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
-              >
-                取消
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
       {error ? (
         <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
           {error}
@@ -235,7 +246,7 @@ export function KnowledgeBasesPage() {
           {filtered.map((kb) => (
             <article
               key={kb.id}
-              className="flex flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-card transition hover:border-primary/40 lg:rounded-xl lg:p-5"
+              className="group flex flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-card transition hover:border-primary/40 lg:rounded-xl lg:p-5"
             >
               <div className="flex items-start gap-3">
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-soft text-primary">
@@ -244,17 +255,10 @@ export function KnowledgeBasesPage() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-start justify-between gap-2">
                     <h2 className="text-sm font-semibold leading-snug text-slate-900">{kb.name}</h2>
-                    <div className="relative shrink-0">
-                      <button
-                        type="button"
-                        className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                        title="删除"
-                        aria-label="删除知识库"
-                        onClick={() => void onDelete(kb.id, kb.name)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
+                    <ActionIcons
+                      onEdit={() => openEdit(kb)}
+                      onDelete={() => void onDelete(kb.id, kb.name)}
+                    />
                   </div>
                   <span className="mt-1 inline-block rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
                     私有
@@ -281,7 +285,7 @@ export function KnowledgeBasesPage() {
 
           <button
             type="button"
-            onClick={() => setShowCreate(true)}
+            onClick={openCreate}
             className="flex min-h-[140px] flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-200 bg-white text-sm font-medium text-slate-500 transition hover:border-primary hover:text-primary lg:min-h-[180px] lg:rounded-xl"
           >
             <Plus className="mb-2 h-8 w-8" />
@@ -289,6 +293,43 @@ export function KnowledgeBasesPage() {
           </button>
         </div>
       )}
+
+      <FormDialog
+        open={formMode !== null}
+        title={formMode === "edit" ? "编辑知识库" : "新建知识库"}
+        onClose={closeForm}
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={closeForm}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void onSave()}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary-hover disabled:opacity-60"
+            >
+              {saving ? "保存中…" : "确定"}
+            </button>
+          </>
+        }
+      >
+        <label className="block text-sm font-medium text-slate-700">名称</label>
+        <input
+          value={formName}
+          onChange={(e) => setFormName(e.target.value)}
+          maxLength={50}
+          placeholder="最多 50 字"
+          className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none ring-primary focus:border-primary focus:ring-2"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void onSave();
+          }}
+        />
+      </FormDialog>
     </div>
   );
 }

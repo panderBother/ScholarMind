@@ -1,6 +1,6 @@
 # ScholarMind 项目开发流程与步骤（v1.2）
 
-> 依据：`ScholarMind_PRD_v1.0.docx`（v1.0，2026-04）  
+> 依据：**[ScholarMind_PRD_v2.0](ScholarMind_PRD_v2.0.md)**（v2.0，升级自 KnowMind AI PRD；Word 版 [`ScholarMind_PRD_v2.0.docx`](ScholarMind_PRD_v2.0.docx)）  
 > 仓库现状（截至文档编写时）：`scholarmind-web` 主要页面与布局已具备；`scholarmind-server` 仅有健康检查与占位对话接口；`scholarmind-agent` 为 LangGraph 占位；`scholarmind-mcp`、`scholarmind-agent/rag` 等目录已存在，需与 API、Agent 主链路集成。  
 > **v1.1**：已锁定技术选型与节奏；**里程碑时间与交付物严格对齐 PRD 第 6 节「开发里程碑」**（第 1–12 周），周内任务仍按纵向切片排期。  
 > **v1.2**：关系型数据库定为 **MySQL**（见第 2 节）。

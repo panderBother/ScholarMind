@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from app.core.config import get_settings
+from app.http_client import sync_request_with_retry
 
 log = logging.getLogger(__name__)
 
@@ -91,31 +92,35 @@ def _embed_http_batch(texts: list[str]) -> list[list[float]]:
     max_chars = 12000
     clipped = [t[:max_chars] if len(t) > max_chars else t for t in texts]
 
-    with httpx.Client(timeout=timeout) as client:
-        # 先尝试 OpenAI 风格批量 input: string[]
-        try:
-            r = client.post(url, headers=headers, json={"model": model, "input": clipped})
-            r.raise_for_status()
-            vecs = _parse_embeddings_json(r.json())
-            if len(vecs) == len(clipped):
-                return vecs
-            log.warning(
-                "http embedding 批量返回条数与请求不一致 (%s vs %s)，改为逐条请求",
-                len(vecs),
-                len(clipped),
-            )
-        except (httpx.HTTPStatusError, RuntimeError, KeyError, TypeError, ValueError) as e:
-            log.warning("http embedding 批量失败，改为逐条: %s", e)
+    def _post_batch(client: httpx.Client) -> httpx.Response:
+        return client.post(url, headers=headers, json={"model": model, "input": clipped})
 
-        out: list[list[float]] = []
-        for i, one in enumerate(clipped):
-            r = client.post(url, headers=headers, json={"model": model, "input": one})
-            r.raise_for_status()
-            rows = _parse_embeddings_json(r.json())
-            if len(rows) != 1:
-                raise RuntimeError(f"单条 embedding 期望 1 条向量，得到 {len(rows)}（index={i}）")
-            out.append(rows[0])
-        return out
+    try:
+        r = sync_request_with_retry(_post_batch, timeout=timeout)
+        r.raise_for_status()
+        vecs = _parse_embeddings_json(r.json())
+        if len(vecs) == len(clipped):
+            return vecs
+        log.warning(
+            "http embedding 批量返回条数与请求不一致 (%s vs %s)，改为逐条请求",
+            len(vecs),
+            len(clipped),
+        )
+    except (httpx.HTTPStatusError, RuntimeError, KeyError, TypeError, ValueError) as e:
+        log.warning("http embedding 批量失败，改为逐条: %s", e)
+
+    out: list[list[float]] = []
+    for i, one in enumerate(clipped):
+        def _post_one(client: httpx.Client, text: str = one) -> httpx.Response:
+            return client.post(url, headers=headers, json={"model": model, "input": text})
+
+        r = sync_request_with_retry(_post_one, timeout=timeout)
+        r.raise_for_status()
+        rows = _parse_embeddings_json(r.json())
+        if len(rows) != 1:
+            raise RuntimeError(f"单条 embedding 期望 1 条向量，得到 {len(rows)}（index={i}）")
+        out.append(rows[0])
+    return out
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:

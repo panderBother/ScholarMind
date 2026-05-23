@@ -3,6 +3,7 @@ import { AppShell } from "@/components/layout/AppShell";
 import { ChatPage } from "@/pages/ChatPage";
 import { DocumentsPage } from "@/pages/DocumentsPage";
 import { EvalDashboardPage } from "@/pages/EvalDashboardPage";
+import { KnowledgeItemDetailPage } from "@/pages/KnowledgeItemDetailPage";
 import { KnowledgeBasesPage } from "@/pages/KnowledgeBasesPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { ReportPage } from "@/pages/ReportPage";
@@ -25,6 +26,7 @@ export default function App() {
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/knowledge-bases" element={<KnowledgeBasesPage />} />
           <Route path="/documents" element={<DocumentsPage />} />
+          <Route path="/documents/items/:kbId/:itemId" element={<KnowledgeItemDetailPage />} />
           <Route path="/reports" element={<ReportsIndexPage />} />
           <Route path="/reports/:id" element={<ReportPage />} />
           <Route path="/evaluation" element={<EvalDashboardPage />} />

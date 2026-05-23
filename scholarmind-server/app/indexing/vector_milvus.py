@@ -53,6 +53,14 @@ class MilvusRemoteIndex:
         self._c.upsert(collection_name=self._name, data=data)
         log.info("milvus upsert %s chunks", len(rows))
 
+    def delete_chunks(self, chunk_ids: list[str]) -> None:
+        if not chunk_ids:
+            return
+        try:
+            self._c.delete(collection_name=self._name, ids=chunk_ids)
+        except Exception as e:
+            log.warning("milvus delete failed: %s", e)
+
     def query_similar(
         self,
         *,

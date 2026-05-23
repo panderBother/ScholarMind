@@ -1,6 +1,6 @@
 # ScholarMind
 
-ScholarMind 是面向科研与学术场景的「私有文献知识库 + RAG 检索对话」一体化单仓：用户可创建知识库、上传 PDF 文献，由后端完成解析与切块，并写入向量与全文关键词索引，在对话页中基于检索证据获得可核对、可流式呈现的回答。工程上前端采用 React（Vite、Tailwind），后端采用 FastAPI，覆盖账户与知识库、文献生命周期、索引构建与对接外部推理的 SSE 链路等核心纵向能力；Agent 编排、MCP 工具、评估看板与报告导出等将按产品规划迭代接入。功能边界、里程碑与落地步骤以根目录 PRD（`ScholarMind_PRD_v1.0`）及 **[开发流程与步骤](docs/ScholarMind_开发流程与步骤_v1.md)** 为准。
+ScholarMind 是面向科研与学术场景的「私有文献知识库 + RAG 检索对话」一体化单仓：用户可创建知识库、上传 PDF 文献，由后端完成解析与切块，并写入向量与全文关键词索引，在对话页中基于检索证据获得可核对、可流式呈现的回答。工程上前端采用 React（Vite、Tailwind），后端采用 FastAPI，覆盖账户与知识库、文献生命周期、索引构建与对接外部推理的 SSE 链路等核心纵向能力；Agent 编排、MCP 工具、评估看板与报告导出等将按产品规划迭代接入。功能边界、里程碑与落地步骤以 **[PRD v2.0](docs/ScholarMind_PRD_v2.0.md)**（[`ScholarMind_PRD_v2.0.docx`](docs/ScholarMind_PRD_v2.0.docx)）及 **[开发流程与步骤](docs/ScholarMind_开发流程与步骤_v1.md)** 为准。
 
 ---
 
@@ -21,7 +21,7 @@ ScholarMind 是面向科研与学术场景的「私有文献知识库 + RAG 检�
 |------|------|
 | `scholarmind-server/` | **FastAPI** 后端：JWT 鉴权、知识库与文献 CRUD、PDF 入库与解析任务、Chroma + Whoosh 索引、对接 EdgeFN 的 **SSE 流式对话** |
 | `scholarmind-web/` | **React + Vite + Tailwind** 前端：登录、知识库、文献列表、对话页（Streamdown 流式 Markdown + Shiki 代码高亮）等 |
-| `docs/` | 工程文档：开发流程与 PRD 阶段映射、**[对话记忆与上下文技术方案](docs/ScholarMind_对话记忆与上下文技术方案_v1.md)**（MySQL / Redis / 向量库 / 摘要与默认参数 / Prompt KV 缓存）等 |
+| `docs/` | 工程文档：开发流程与 PRD 阶段映射、**[对话记忆与上下文技术方案](docs/ScholarMind_对话记忆与上下文技术方案_v1.md)**（MySQL / Redis / 向量库 / 摘要与默认参数 / Prompt KV 缓存）、**[课题最高规格执行流程](docs/ScholarMind_课题最高规格执行流程_v1.md)**（三角色 RBAC、前后台、知识审核发布、条目生命周期、混合检索、专家审核、收藏与建议等）等 |
 
 其他 PRD 中规划的目录（如独立 Agent 服务、MCP 包、评估流水线）若在仓库中出现，以各子目录 README 或代码注释为准逐步接线。
 
@@ -123,6 +123,7 @@ uv run pytest tests/ -q
 
 ## 相关文档
 
+- [ScholarMind PRD v2.0](docs/ScholarMind_PRD_v2.0.md) — 产品需求规格（升级自 KnowMind AI PRD v2.0，与仓库实现对齐）
 - [ScholarMind 开发流程与步骤 v1.2](docs/ScholarMind_开发流程与步骤_v1.md) — 与 PRD 模块、里程碑、技术选型的映射
 - [scholarmind-server README](scholarmind-server/README.md) — 服务端补充说明（若与本文冲突，以根目录本文与 `env.example` 为准）
 

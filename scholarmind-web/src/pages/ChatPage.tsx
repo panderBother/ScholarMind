@@ -17,6 +17,7 @@ import {
   SquarePen,
 } from "lucide-react";
 import { AssistantMarkdown } from "@/components/AssistantMarkdown";
+import { useUi } from "@/components/ui/UiProvider";
 import { getAccessToken } from "@/services/auth";
 import { streamChatMessage, type ChatToolResult } from "@/services/chat";
 import {
@@ -33,6 +34,12 @@ import {
   setBuiltinMcpEnabled,
 } from "@/services/mcpTools";
 import { listKnowledgeBases, type KnowledgeBaseDto } from "@/services/knowledgeBases";
+import {
+  extractConversationKnowledge,
+  importKnowledgeDrafts,
+  submitChatFeedback,
+} from "@/services/distill";
+import { generateReportFromConversation } from "@/services/reports";
 import { mergeThinkingParts, partitionThinkingBlocks } from "@/utils/partitionThinking";
 
 type FileToolLog = {
@@ -86,6 +93,7 @@ function formatConversationLabel(c: ConversationDto): string {
  */
 export function ChatPage() {
   const nav = useNavigate();
+  const { confirm, message } = useUi();
   const bottomRef = useRef<HTMLDivElement>(null);
   const leftPanelRef = useRef<ImperativePanelHandle>(null);
   const rightPanelRef = useRef<ImperativePanelHandle>(null);
@@ -111,6 +119,9 @@ export function ChatPage() {
   const [mobileSessionsOpen, setMobileSessionsOpen] = useState(false);
   /** 桌面左侧栏：会话与知识库分栏，避免混在同一滚动区 */
   const [leftRailTab, setLeftRailTab] = useState<LeftRailTab>("sessions");
+  const lastUserQueryRef = useRef("");
+  const [extracting, setExtracting] = useState(false);
+  const [generatingReport, setGeneratingReport] = useState(false);
 
   const kbName = useMemo(() => kbs.find((k) => k.id === kbId)?.name ?? "选择知识库", [kbs, kbId]);
 
@@ -240,10 +251,71 @@ export function ChatPage() {
     [applyConversationPayload, conversationId, loadConversationList, loading, switchingConv],
   );
 
+  const handleFeedback = async () => {
+    const correction = window.prompt("请填写您认为更正确的答案或补充说明：");
+    if (!correction?.trim()) return;
+    try {
+      await submitChatFeedback({
+        knowledge_base_id: kbId || null,
+        conversation_id: conversationId,
+        query_text: lastUserQueryRef.current || null,
+        correction: correction.trim(),
+      });
+      message.success("感谢反馈，已记录用于知识蒸馏分析。");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "提交反馈失败");
+    }
+  };
+
+  const handleExtractToKb = async () => {
+    if (!conversationId || !kbId) {
+      setErr("请先选择知识库并至少进行一轮对话");
+      return;
+    }
+    setExtracting(true);
+    setErr(null);
+    try {
+      const { drafts } = await extractConversationKnowledge(conversationId, { kb_id: kbId });
+      const preview = drafts.map((d, i) => `${i + 1}. ${d.title}`).join("\n");
+      const ok = await confirm({
+        title: "导入知识条目",
+        message: `提炼出 ${drafts.length} 条草稿：\n${preview}\n\n确认导入为知识条目（草稿）？`,
+        confirmText: "导入",
+        type: "info",
+      });
+      if (!ok) return;
+      await importKnowledgeDrafts(kbId, drafts, false);
+      message.success("已导入为草稿条目，可在「文献管理 → 条目视图」中发布。");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "提炼失败");
+    } finally {
+      setExtracting(false);
+    }
+  };
+
+  const handleGenerateReport = async () => {
+    if (!conversationId || !kbId) {
+      setErr("请先选择知识库并至少进行一轮对话");
+      return;
+    }
+    setGeneratingReport(true);
+    setErr(null);
+    try {
+      const report = await generateReportFromConversation(conversationId, { kb_id: kbId });
+      message.success("报告已生成");
+      nav(`/reports/${report.id}`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "生成报告失败");
+    } finally {
+      setGeneratingReport(false);
+    }
+  };
+
   const handleSend = async () => {
     const text = input.trim();
     if (!text || loading || hydrating || switchingConv) return;
     setErr(null);
+    lastUserQueryRef.current = text;
     setInput("");
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -847,6 +919,17 @@ export function ChatPage() {
                 </ul>
               ) : null}
               <AssistantMarkdown markdown={m.content} isStreaming={!(m.streamFinal ?? true)} />
+              {(m.streamFinal ?? true) && m.content ? (
+                <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleFeedback()}
+                    className="text-xs font-medium text-slate-500 hover:text-red-600"
+                  >
+                    不满意 / 纠错
+                  </button>
+                </div>
+              ) : null}
             </div>
           ),
         )}
@@ -872,6 +955,22 @@ export function ChatPage() {
             {label}
           </button>
         ))}
+        <button
+          type="button"
+          disabled={!conversationId || !kbId || extracting}
+          onClick={() => void handleExtractToKb()}
+          className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-800 shadow-sm hover:bg-violet-100 disabled:opacity-50"
+        >
+          {extracting ? "提炼中…" : "提炼到知识库"}
+        </button>
+        <button
+          type="button"
+          disabled={!conversationId || !kbId || generatingReport || loading}
+          onClick={() => void handleGenerateReport()}
+          className="rounded-full border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs font-medium text-primary shadow-sm hover:bg-primary/10 disabled:opacity-50"
+        >
+          {generatingReport ? "生成报告中…" : "生成报告"}
+        </button>
       </div>
 
       <footer className="shrink-0 border-t border-slate-200 bg-white px-2 py-2 lg:p-4">

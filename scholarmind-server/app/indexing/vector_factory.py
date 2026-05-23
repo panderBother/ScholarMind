@@ -12,6 +12,8 @@ log = logging.getLogger(__name__)
 class VectorIndex(Protocol):
     def upsert_chunks(self, rows: list[dict[str, Any]]) -> None: ...
 
+    def delete_chunks(self, chunk_ids: list[str]) -> None: ...
+
     def query_similar(
         self,
         *,

@@ -1,5 +1,67 @@
 @import "streamdown/styles.css";
 
+/* 静态 Markdown 预览：标题 / 列表 / 段落（兼容 Streamdown 内部 DOM） */
+.markdown-preview-root h1,
+.markdown-preview-root h2,
+.markdown-preview-root h3,
+.markdown-preview-root h4,
+.markdown-preview-root .streamdown-static h1,
+.markdown-preview-root .streamdown-static h2,
+.markdown-preview-root .streamdown-static h3,
+.markdown-preview-root .streamdown-static h4 {
+  font-weight: 600;
+  color: #0f172a;
+  margin-top: 1.25em;
+  margin-bottom: 0.5em;
+  line-height: 1.35;
+}
+.markdown-preview-root h1,
+.markdown-preview-root .streamdown-static h1 { font-size: 1.5rem; }
+.markdown-preview-root h2,
+.markdown-preview-root .streamdown-static h2 { font-size: 1.25rem; }
+.markdown-preview-root h3,
+.markdown-preview-root .streamdown-static h3 { font-size: 1.125rem; }
+.markdown-preview-root h4,
+.markdown-preview-root .streamdown-static h4 { font-size: 1rem; }
+.markdown-preview-root p,
+.markdown-preview-root .streamdown-static p {
+  margin: 0.75em 0;
+}
+.markdown-preview-root ul,
+.markdown-preview-root ol,
+.markdown-preview-root .streamdown-static ul,
+.markdown-preview-root .streamdown-static ol {
+  margin: 0.75em 0;
+  padding-left: 1.5em;
+}
+.markdown-preview-root ul,
+.markdown-preview-root .streamdown-static ul { list-style-type: disc; }
+.markdown-preview-root ol,
+.markdown-preview-root .streamdown-static ol { list-style-type: decimal; }
+.markdown-preview-root li,
+.markdown-preview-root .streamdown-static li {
+  margin: 0.25em 0;
+}
+.markdown-preview-root .streamdown-static strong {
+  font-weight: 600;
+}
+.markdown-preview-root .streamdown-static a {
+  color: #0066ff;
+  text-decoration: underline;
+}
+.markdown-preview-root .streamdown-static blockquote {
+  border-left: 3px solid #cbd5e1;
+  padding-left: 1em;
+  color: #64748b;
+  margin: 1em 0;
+}
+.markdown-preview-root .streamdown-static pre {
+  margin: 1em 0;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+}
+
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

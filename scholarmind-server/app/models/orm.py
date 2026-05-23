@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -58,6 +58,94 @@ class KnowledgeBase(Base):
         back_populates="knowledge_base",
         cascade="all, delete-orphan",
     )
+    categories: Mapped[list[KnowledgeCategory]] = relationship(
+        "KnowledgeCategory",
+        back_populates="knowledge_base",
+        cascade="all, delete-orphan",
+    )
+    items: Mapped[list[KnowledgeItem]] = relationship(
+        "KnowledgeItem",
+        back_populates="knowledge_base",
+        cascade="all, delete-orphan",
+    )
+
+
+class KnowledgeCategory(Base):
+    __tablename__ = "knowledge_categories"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    kb_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    parent_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("knowledge_categories.id", ondelete="SET NULL"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    knowledge_base: Mapped[KnowledgeBase] = relationship(back_populates="categories")
+    parent: Mapped[KnowledgeCategory | None] = relationship(
+        remote_side="KnowledgeCategory.id",
+        back_populates="children",
+    )
+    children: Mapped[list[KnowledgeCategory]] = relationship(back_populates="parent")
+    items: Mapped[list["KnowledgeItem"]] = relationship(back_populates="category")
+
+
+class KnowledgeItem(Base):
+    __tablename__ = "knowledge_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    kb_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    document_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("documents.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    category_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("knowledge_categories.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="draft", index=True
+    )
+    access_level: Mapped[str] = mapped_column(String(32), nullable=False, default="internal")
+    source: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    chunk_id: Mapped[str | None] = mapped_column(String(36), index=True, nullable=True)
+    page: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    knowledge_base: Mapped[KnowledgeBase] = relationship(back_populates="items")
+    category: Mapped[KnowledgeCategory | None] = relationship(back_populates="items")
+    document: Mapped[Document | None] = relationship(back_populates="items")
 
 
 class Document(Base):
@@ -89,6 +177,7 @@ class Document(Base):
     )
 
     knowledge_base: Mapped[KnowledgeBase] = relationship(back_populates="documents")
+    items: Mapped[list[KnowledgeItem]] = relationship(back_populates="document")
 
 
 class Conversation(Base):
@@ -168,3 +257,103 @@ class ConversationSummary(Base):
     )
 
     conversation: Mapped[Conversation] = relationship(back_populates="summaries")
+
+
+class RagRetrievalLog(Base):
+    __tablename__ = "rag_retrieval_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    kb_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False
+    )
+    conversation_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
+    )
+    query_text: Mapped[str] = mapped_column(Text, nullable=False)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    avg_score: Mapped[float | None] = mapped_column(nullable=True)
+    hit_scores: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    top_item_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class UserFeedback(Base):
+    __tablename__ = "user_feedback"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    kb_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("knowledge_bases.id", ondelete="SET NULL"), nullable=True
+    )
+    conversation_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
+    )
+    message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    query_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    correction: Mapped[str] = mapped_column(Text, nullable=False)
+    topic_key: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class KnowledgeGap(Base):
+    __tablename__ = "knowledge_gaps"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    kb_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    gap_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    trigger_rule: Mapped[str] = mapped_column(String(64), nullable=False)
+    sample_queries: Mapped[list] = mapped_column(JSON, nullable=False)
+    avg_score: Mapped[float | None] = mapped_column(nullable=True)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open", server_default="open")
+    draft_item_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class ResearchReport(Base):
+    """会话一键生成的结构化研究报告。"""
+
+    __tablename__ = "research_reports"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    kb_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    conversation_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    content_md: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_answer_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outline_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    citations_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="ready", server_default="ready")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )

@@ -1,17 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   CheckCircle2,
   ChevronDown,
   FileText,
   Filter,
+  Trash2,
   UploadCloud,
   XCircle,
 } from "lucide-react";
 
+import { KnowledgeItemsPanel } from "@/components/KnowledgeItemsPanel";
+import { DocumentPreviewDrawer } from "@/components/DocumentPreviewDrawer";
+import { useUi } from "@/components/ui/UiProvider";
 import { getAccessToken } from "@/services/auth";
-import { listDocuments, retryDocumentParse, uploadDocuments, type DocumentDto } from "@/services/documents";
+import {
+  deleteDocument,
+  listDocuments,
+  retryDocumentParse,
+  uploadDocuments,
+  type DocumentDto,
+} from "@/services/documents";
 import { listKnowledgeBases, type KnowledgeBaseDto } from "@/services/knowledgeBases";
+
+const VIEW_TABS = ["文献视图", "条目视图"] as const;
 
 /** 与移动原型一致的筛选 Tab */
 const TABS_MOBILE = ["全部", "解析中", "已完成", "失败"] as const;
@@ -29,14 +41,19 @@ function mapApiStatus(s: string): "Completed" | "Processing" | "Failed" | "Pendi
  */
 export function DocumentsPage() {
   const nav = useNavigate();
+  const location = useLocation();
+  const { confirm, message } = useUi();
   const fileRef = useRef<HTMLInputElement>(null);
   const [kbs, setKbs] = useState<KnowledgeBaseDto[]>([]);
   const [kbId, setKbId] = useState<string>("");
   const [docs, setDocs] = useState<DocumentDto[]>([]);
+  const [viewTab, setViewTab] = useState<(typeof VIEW_TABS)[number]>("文献视图");
   const [tab, setTab] = useState<string>("全部");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [previewDoc, setPreviewDoc] = useState<DocumentDto | null>(null);
+  const [itemDocFilter, setItemDocFilter] = useState<{ id: string; name: string } | null>(null);
 
   const loadKbs = useCallback(async () => {
     if (!getAccessToken()) {
@@ -75,6 +92,19 @@ export function DocumentsPage() {
   useEffect(() => {
     void loadKbs();
   }, [loadKbs]);
+
+  useEffect(() => {
+    const s = location.state as {
+      kbId?: string;
+      viewTab?: (typeof VIEW_TABS)[number];
+      itemDocFilter?: { id: string; name: string };
+    } | null;
+    if (!s) return;
+    if (s.kbId) setKbId(s.kbId);
+    if (s.viewTab) setViewTab(s.viewTab);
+    if (s.itemDocFilter) setItemDocFilter(s.itemDocFilter);
+    window.history.replaceState({}, document.title);
+  }, [location.state]);
 
   useEffect(() => {
     void loadDocs();
@@ -139,6 +169,41 @@ export function DocumentsPage() {
     }
   };
 
+  const onEditDocumentItems = (doc: DocumentDto) => {
+    setPreviewDoc(null);
+    setItemDocFilter({ id: doc.id, name: doc.filename });
+    setViewTab("条目视图");
+  };
+
+  const openPreview = (doc: DocumentDto) => {
+    setPreviewDoc(doc);
+  };
+
+  const onDeleteDocument = async (doc: DocumentDto) => {
+    if (!kbId) return;
+    const itemHint =
+      doc.status === "done" && doc.chunk_count > 0
+        ? `将同时删除 ${doc.chunk_count} 条解析条目及其检索索引。`
+        : "若已有解析条目，也会一并删除。";
+    const ok = await confirm({
+      title: "删除文献",
+      message: `确定删除「${doc.filename}」？${itemHint}此操作不可恢复。`,
+      confirmText: "删除",
+      type: "danger",
+    });
+    if (!ok) return;
+    setErr(null);
+    try {
+      await deleteDocument(kbId, doc.id);
+      if (previewDoc?.id === doc.id) setPreviewDoc(null);
+      if (itemDocFilter?.id === doc.id) setItemDocFilter(null);
+      message.success("文献及关联条目已删除");
+      await loadDocs();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "删除失败");
+    }
+  };
+
   const kbName = kbs.find((k) => k.id === kbId)?.name ?? "选择知识库";
 
   return (
@@ -165,6 +230,36 @@ export function DocumentsPage() {
         </p>
       ) : null}
 
+      <div className="flex gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
+        {VIEW_TABS.map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setViewTab(t)}
+            className={
+              viewTab === t
+                ? "flex-1 rounded-lg bg-primary-soft py-2 text-sm font-semibold text-primary"
+                : "flex-1 rounded-lg py-2 text-sm text-slate-600 hover:bg-slate-50"
+            }
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {viewTab === "条目视图" ? (
+        kbId ? (
+          <KnowledgeItemsPanel
+            kbId={kbId}
+            documentId={itemDocFilter?.id}
+            documentName={itemDocFilter?.name}
+            onClearDocumentFilter={() => setItemDocFilter(null)}
+          />
+        ) : (
+          <p className="text-sm text-slate-500">请先选择知识库</p>
+        )
+      ) : (
+        <>
       {hasQueuedDocs ? (
         <div
           className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 lg:px-4"
@@ -286,10 +381,18 @@ export function DocumentsPage() {
               const title = row.title || row.filename;
               return (
                 <li key={row.id} className="flex gap-3 p-4">
-                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-red-50 text-red-600">
+                  <button
+                    type="button"
+                    onClick={() => openPreview(row)}
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-red-50 text-red-600 hover:bg-red-100"
+                  >
                     <FileText className="h-6 w-6" />
-                  </div>
-                  <div className="min-w-0 flex-1">
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openPreview(row)}
+                    className="min-w-0 flex-1 text-left hover:opacity-90"
+                  >
                     <div className="font-medium leading-snug text-slate-900">{row.filename}</div>
                     <div className="mt-0.5 text-xs text-slate-500">
                       {mb} MB · {title.slice(0, 40)}
@@ -302,24 +405,49 @@ export function DocumentsPage() {
                     )}
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <StatusBadge status={st} />
-                      {(row.status === "pending" ||
-                        row.status === "processing" ||
-                        row.status === "failed") && (
-                        <button
-                          type="button"
-                          onClick={() => void onRetryParse(row.id)}
-                          className="text-xs font-semibold text-primary hover:underline"
-                        >
-                          重新解析
-                        </button>
-                      )}
                     </div>
                     {row.error_message ? (
                       <p className="mt-1 text-xs text-red-600">{row.error_message}</p>
                     ) : null}
+                  </button>
+                  <div className="flex shrink-0 flex-col items-end gap-2">
+                    {st === "Completed" && <CheckCircle2 className="h-5 w-5 text-emerald-500" />}
+                    {st === "Failed" && <XCircle className="h-5 w-5 text-red-500" />}
+                    {(row.status === "pending" ||
+                      row.status === "processing" ||
+                      row.status === "failed") && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void onRetryParse(row.id);
+                        }}
+                        className="text-xs font-semibold text-primary hover:underline"
+                      >
+                        重新解析
+                      </button>
+                    )}
+                    {row.status === "done" ? (
+                      <button
+                        type="button"
+                        onClick={() => onEditDocumentItems(row)}
+                        className="text-xs font-semibold text-primary hover:underline"
+                      >
+                        编辑条目
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void onDeleteDocument(row);
+                      }}
+                      className="inline-flex items-center gap-0.5 text-xs font-semibold text-red-600 hover:underline"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      删除
+                    </button>
                   </div>
-                  {st === "Completed" && <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" />}
-                  {st === "Failed" && <XCircle className="h-5 w-5 shrink-0 text-red-500" />}
                 </li>
               );
             })
@@ -349,12 +477,16 @@ export function DocumentsPage() {
                   const st = mapApiStatus(row.status);
                   const mb = (row.file_bytes / (1024 * 1024)).toFixed(2);
                   return (
-                    <tr key={row.id} className="hover:bg-slate-50/80">
-                      <td className="px-4 py-3 font-medium text-slate-900">{row.filename}</td>
+                    <tr
+                      key={row.id}
+                      className="cursor-pointer hover:bg-slate-50/80"
+                      onClick={() => openPreview(row)}
+                    >
+                      <td className="px-4 py-3 font-medium text-primary hover:underline">{row.filename}</td>
                       <td className="px-4 py-3 text-slate-600">{row.title || "—"}</td>
                       <td className="px-4 py-3 text-slate-600">{mb} MB</td>
                       <td className="px-4 py-3 text-slate-600">{row.chunk_count}</td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex flex-wrap items-center gap-2">
                           <StatusBadge status={st} />
                           {(row.status === "pending" ||
@@ -368,6 +500,23 @@ export function DocumentsPage() {
                               重新解析
                             </button>
                           )}
+                          {row.status === "done" ? (
+                            <button
+                              type="button"
+                              onClick={() => onEditDocumentItems(row)}
+                              className="text-xs font-semibold text-primary hover:underline"
+                            >
+                              编辑条目
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => void onDeleteDocument(row)}
+                            className="inline-flex items-center gap-0.5 text-xs font-semibold text-red-600 hover:underline"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            删除
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -382,6 +531,18 @@ export function DocumentsPage() {
           <span>共 {filtered.length} 条</span>
         </div>
       </section>
+        </>
+      )}
+
+      {previewDoc && kbId ? (
+        <DocumentPreviewDrawer
+          kbId={kbId}
+          doc={previewDoc}
+          onClose={() => setPreviewDoc(null)}
+          onEditItems={onEditDocumentItems}
+          onDelete={(doc) => void onDeleteDocument(doc)}
+        />
+      ) : null}
     </div>
   );
 }

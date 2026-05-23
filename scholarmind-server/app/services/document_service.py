@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -10,8 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models.orm import Document, KnowledgeBase, new_uuid
+from app.models.orm import Document, KnowledgeBase, KnowledgeItem, new_uuid
 from app.schemas.document import DocumentOut, DocumentUploadResponse
+from app.services import item_indexing
 from app.storage import get_blob_storage
 
 PDF_MAGIC = b"%PDF"
@@ -154,3 +156,59 @@ async def retry_document_parse(
     else:
         process_document_task.delay(doc.id)
     return DocumentOut.model_validate(doc)
+
+
+async def get_document(
+    session: AsyncSession,
+    user_id: str,
+    kb_id: str,
+    doc_id: str,
+) -> Document:
+    await _ensure_kb(session, user_id, kb_id)
+    doc = await session.get(Document, doc_id)
+    if doc is None or doc.kb_id != kb_id or doc.user_id != user_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "文献不存在")
+    return doc
+
+
+def document_filesystem_path(doc: Document) -> str:
+    storage = get_blob_storage()
+    path = Path(storage.filesystem_path(doc.storage_key))
+    if not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "文献文件不存在")
+    return str(path)
+
+
+async def delete_document(
+    session: AsyncSession,
+    user_id: str,
+    kb_id: str,
+    doc_id: str,
+) -> None:
+    """删除文献 PDF、关联解析条目及检索索引。"""
+    doc = await get_document(session, user_id, kb_id, doc_id)
+    q = await session.execute(select(KnowledgeItem).where(KnowledgeItem.document_id == doc_id))
+    items = list(q.scalars().all())
+    chunk_ids = [i.chunk_id for i in items if i.chunk_id]
+
+    for item in items:
+        await session.delete(item)
+
+    storage_key = doc.storage_key
+    was_done = doc.status == "done"
+    await session.delete(doc)
+
+    kb = await session.get(KnowledgeBase, kb_id)
+    if kb is not None and was_done:
+        kb.doc_count = max(0, int(kb.doc_count or 0) - 1)
+
+    await session.commit()
+
+    storage = get_blob_storage()
+    try:
+        await storage.delete(storage_key)
+    except Exception:
+        log.warning("delete document %s: blob remove failed key=%s", doc_id, storage_key, exc_info=True)
+
+    if chunk_ids:
+        await asyncio.to_thread(item_indexing.remove_index_chunks, chunk_ids)

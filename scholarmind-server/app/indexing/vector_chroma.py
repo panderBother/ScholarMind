@@ -35,13 +35,24 @@ class ChromaVectorIndex:
             {
                 "kb_id": r["kb_id"],
                 "user_id": r["user_id"],
-                "doc_id": r["doc_id"],
+                "doc_id": str(r.get("doc_id") or ""),
+                "item_id": str(r.get("item_id") or ""),
                 "page": int(r["page"]),
+                "lifecycle_status": str(r.get("lifecycle_status") or "published"),
             }
             for r in rows
         ]
         self._col.upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
         log.info("chroma upsert %s chunks", len(rows))
+
+    def delete_chunks(self, chunk_ids: list[str]) -> None:
+        if not chunk_ids:
+            return
+        try:
+            self._col.delete(ids=chunk_ids)
+            log.info("chroma delete %s chunks", len(chunk_ids))
+        except Exception as e:
+            log.warning("chroma delete failed: %s", e)
 
     def query_similar(
         self,
@@ -55,12 +66,30 @@ class ChromaVectorIndex:
             raw = self._col.query(
                 query_embeddings=[query_embedding],
                 n_results=k,
-                where={"kb_id": kb_id},
+                where={
+                    "$and": [
+                        {"kb_id": kb_id},
+                        {"lifecycle_status": "published"},
+                    ]
+                },
                 include=["documents", "metadatas", "distances"],
             )
         except Exception as e:
             log.warning("chroma query failed: %s", e)
             return []
+
+        ids_list = raw.get("ids") or []
+        if not ids_list or not ids_list[0]:
+            try:
+                raw = self._col.query(
+                    query_embeddings=[query_embedding],
+                    n_results=k,
+                    where={"kb_id": kb_id},
+                    include=["documents", "metadatas", "distances"],
+                )
+            except Exception as e:
+                log.warning("chroma legacy query failed: %s", e)
+                return []
 
         ids_list = raw.get("ids") or []
         docs_list = raw.get("documents") or []
@@ -81,6 +110,7 @@ class ChromaVectorIndex:
                     "chunk_id": cid,
                     "text": doc_txt,
                     "doc_id": str(meta.get("doc_id", "")),
+                    "item_id": str(meta.get("item_id", "")),
                     "page": int(meta.get("page") or 0),
                     "distance": dist,
                 },

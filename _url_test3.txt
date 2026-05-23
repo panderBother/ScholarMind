@@ -1,0 +1,2 @@
+﻿fetch raw len 667
+fields len 667

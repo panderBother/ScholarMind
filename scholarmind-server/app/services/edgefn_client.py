@@ -6,6 +6,7 @@ EdgeFN OpenAI 兼容 Chat Completions（/v1/chat/completions）。
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -13,6 +14,7 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.http_client import async_request_with_retry, friendly_connect_error
 from app.services.file_workspace import FILE_TOOLS_SYSTEM_HINT
 
 
@@ -68,6 +70,28 @@ class ChatTurnResult:
     content: str = ""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
+
+
+def turn_visible_text(turn: ChatTurnResult) -> str:
+    """优先 content；R1 等模型可能只有 reasoning_content。"""
+    content = (turn.content or "").strip()
+    if content:
+        return content
+    reasoning = (turn.reasoning or "").strip()
+    if not reasoning:
+        return ""
+    text = reasoning
+    for tag in ("think", "redacted_thinking", "reasoning"):
+        open_pat = rf"<{tag}\b[^>]*>"
+        close_pat = rf"</{tag}>"
+        text = re.sub(open_pat + r"[\s\S]*?" + close_pat, "", text, flags=re.IGNORECASE)
+    for tag in ("think", "redacted_thinking", "reasoning"):
+        m = re.search(rf"</{tag}>\s*", text, re.IGNORECASE)
+        if m:
+            tail = text[m.end() :].strip()
+            if tail:
+                return tail
+    return text.strip()
 
 
 def _base_system_parts(
@@ -176,32 +200,40 @@ async def _post_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not key:
         raise RuntimeError("未配置 EDGEFN_API_KEY")
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
-        r = await client.post(
-            _chat_url(),
+    chat_url = _chat_url()
+
+    async def _do_post(client: httpx.AsyncClient) -> httpx.Response:
+        return await client.post(
+            chat_url,
             headers={
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
             },
             json=payload,
         )
-        try:
-            data = r.json()
-        except json.JSONDecodeError as e:
-            r.raise_for_status()
-            raise RuntimeError(f"EdgeFN 返回非 JSON：{r.text[:500]}") from e
 
-        if r.status_code >= 400:
-            err = data.get("error") if isinstance(data, dict) else None
-            if isinstance(err, dict):
-                msg = err.get("message") or err.get("code") or json.dumps(err, ensure_ascii=False)
-            else:
-                msg = str(err or r.text[:500])
-            raise RuntimeError(f"EdgeFN 错误 ({r.status_code}): {msg}")
+    try:
+        r = await async_request_with_retry(_do_post, timeout=httpx.Timeout(180.0))
+    except httpx.HTTPError as e:
+        raise RuntimeError(friendly_connect_error(e)) from e
 
-        if not isinstance(data, dict):
-            raise RuntimeError("EdgeFN 响应格式异常")
-        return data
+    try:
+        data = r.json()
+    except json.JSONDecodeError as e:
+        r.raise_for_status()
+        raise RuntimeError(f"EdgeFN 返回非 JSON：{r.text[:500]}") from e
+
+    if r.status_code >= 400:
+        err = data.get("error") if isinstance(data, dict) else None
+        if isinstance(err, dict):
+            msg = err.get("message") or err.get("code") or json.dumps(err, ensure_ascii=False)
+        else:
+            msg = str(err or r.text[:500])
+        raise RuntimeError(f"EdgeFN 错误 ({r.status_code}): {msg}")
+
+    if not isinstance(data, dict):
+        raise RuntimeError("EdgeFN 响应格式异常")
+    return data
 
 
 async def complete_chat_turn(
@@ -256,7 +288,10 @@ async def iter_chat_stream(messages: list[dict[str, str]]) -> AsyncIterator[tupl
         "messages": messages,
         "stream": True,
     }
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=30.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=30.0),
+        trust_env=settings.http_trust_env,
+    ) as client:
         async with client.stream(
             "POST",
             _chat_url(),
