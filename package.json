@@ -1,12 +1,12 @@
 {
-  "name": "scholarmind",
+  "name": "knowmind",
   "private": true,
   "version": "0.1.0",
-  "description": "科研向私有文献知识库与 RAG 对话：React + FastAPI 单仓，文献入库与检索问答（详见 README）。",
-  "workspaces": ["scholarmind-web"],
+  "description": "通用私有知识库与 RAG 对话：React + FastAPI 单仓，文档入库与检索问答（详见 README）。",
+  "workspaces": ["knowmind-web"],
   "scripts": {
     "py:sync": "uv sync",
     "py:dev": "uv sync --group dev",
-    "py:test": "uv run pytest scholarmind-server/tests -q"
+    "py:test": "uv run pytest knowmind-server/tests -q"
   }
 }

@@ -11,6 +11,6 @@ __pycache__/
 _prd_extract/
 _prd.zip
 *.egg-info/
-scholarmind-server/data/
+knowmind-server/data/
 # 本地下载的嵌入模型（如 hf download 拉到 models/）
-scholarmind-server/models/
+knowmind-server/models/

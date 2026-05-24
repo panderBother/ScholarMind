@@ -1,22 +1,22 @@
 {
   "mcpServers": {
-    "scholarmind-web-search": {
+    "knowmind-web-search": {
       "command": "uv",
       "args": [
         "run",
         "--directory",
-        "scholarmind-mcp",
+        "knowmind-mcp",
         "python",
         "-m",
         "web_search.server"
       ]
     },
-    "scholarmind-file-writer": {
+    "knowmind-file-writer": {
       "command": "uv",
       "args": [
         "run",
         "--directory",
-        "scholarmind-mcp",
+        "knowmind-mcp",
         "python",
         "-m",
         "file_writer.server"

@@ -1,0 +1,53 @@
+[project]
+name = "knowmind-server"
+version = "0.1.0"
+description = "KnowMind FastAPI 网关：鉴权、任务编排、与 Agent / MCP 交互"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+  "pydantic-settings>=2.6.0",
+  "python-multipart>=0.0.12",
+  "httpx>=0.27.0",
+  "zstandard>=0.25.0",
+  "trafilatura>=2.0.0",
+  "celery[redis]>=5.4.0",
+  "sqlalchemy[asyncio]>=2.0.36",
+  "asyncmy>=0.2.9",
+  "pymysql>=1.1.1",
+  "alembic>=1.14.0",
+  "bcrypt>=4.1",
+  "python-jose[cryptography]>=3.3.0",
+  "email-validator>=2.2.0",
+  "pymupdf>=1.24.0",
+  "pymilvus>=2.4.4",
+  "chromadb>=0.5.15",
+  "whoosh>=2.7.4",
+  "numpy>=1.26.0",
+  "sentence-transformers>=3.3.0",
+  "knowmind-mcp",
+]
+
+[tool.uv.sources]
+knowmind-mcp = { workspace = true }
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0", "httpx>=0.27.0", "ruff>=0.7.0", "aiosqlite>=0.20.0"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
