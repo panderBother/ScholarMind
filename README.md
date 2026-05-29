@@ -107,7 +107,7 @@ flowchart LR
 | **文档** | PDF 上传、列表、预览、删除、失败重试；本地存储抽象 |
 | **解析流水线** | PDF 文本抽取 → 切块 → Embedding（`bge` / `http` / `hash`）→ Chroma + Whoosh |
 | **知识条目** | 对话提炼、URL 采集、草稿 / 发布 / 归档生命周期 |
-| **对话** | `POST /api/v1/chat/stream`，SSE 推送 `trace_id`、`thinking_delta`、`delta`、`done`；注入 RAG 检索摘录 |
+| **对话** | `POST /api/v1/chat/stream`，SSE 推送 `trace_id`、`agent_step`、`thinking_delta`、`delta`、`done`；注入 RAG 检索摘录；前端右侧「请求追踪」栏实时展示 Agent 步骤 |
 | **报告** | 由对话生成结构化报告，列表 / 详情 / 导出 Markdown |
 | **MCP** | 内置联网搜索、文件读写等工具配置与开关 |
 | **任务执行** | Celery + Redis，或 `INGEST_BACKGROUND_THREAD=true` 本机后台模式 |

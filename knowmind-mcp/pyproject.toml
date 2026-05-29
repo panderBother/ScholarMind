@@ -17,7 +17,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["file_writer*", "web_search*"]
+include = ["file_writer*", "web_search*", "kb_search*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

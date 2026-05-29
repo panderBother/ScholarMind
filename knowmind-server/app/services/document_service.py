@@ -11,22 +11,47 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.ingest.registry import detect_file_type, parse_file, requires_preview
+from app.ingest.types import SUPPORTED_EXTENSIONS, FileType
 from app.models.orm import Document, KnowledgeBase, KnowledgeItem, new_uuid
-from app.schemas.document import DocumentOut, DocumentUploadResponse
+from app.schemas.document import (
+    DocumentConfirmImportResponse,
+    DocumentOut,
+    DocumentParsedContentOut,
+    DocumentParsedContentUpdate,
+    DocumentUploadResponse,
+)
 from app.services import item_indexing
 from app.storage import get_blob_storage
 
-PDF_MAGIC = b"%PDF"
-
 log = logging.getLogger(__name__)
 
+PDF_MAGIC = b"%PDF"
+ZIP_MAGIC = b"PK\x03\x04"
 
-def _safe_filename(name: str | None) -> str:
+
+def _safe_filename(name: str | None, fallback: str = "upload.bin") -> str:
     if not name:
-        return "upload.pdf"
+        return fallback
     base = Path(name).name
     base = re.sub(r"[^\w.\-()\s\u4e00-\u9fff]", "_", base, flags=re.UNICODE).strip()
-    return base or "upload.pdf"
+    return base or fallback
+
+
+def _validate_file_magic(data: bytes, file_type: FileType, filename: str) -> None:
+    ext = Path(filename).suffix.lower()
+    if file_type == FileType.PDF and not data.startswith(PDF_MAGIC):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"不是有效 PDF：{filename}")
+    if file_type in (FileType.DOCX, FileType.XLSX) and not data.startswith(ZIP_MAGIC):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"不是有效 {ext} 文件：{filename}")
+    if file_type == FileType.DOC and not (data.startswith(b"\xd0\xcf\x11\xe0") or data[:4] == ZIP_MAGIC):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"不是有效 Word 文件：{filename}")
+
+
+def _mime_for_type(file_type: FileType) -> str:
+    from app.ingest.types import MIME_BY_TYPE
+
+    return MIME_BY_TYPE.get(file_type, "application/octet-stream")
 
 
 async def _ensure_kb(session: AsyncSession, user_id: str, kb_id: str) -> KnowledgeBase:
@@ -36,7 +61,11 @@ async def _ensure_kb(session: AsyncSession, user_id: str, kb_id: str) -> Knowled
     return kb
 
 
-async def upload_pdfs(
+def _parse_sync(path: str, filename: str, file_type: FileType):
+    return parse_file(path, filename, file_type)
+
+
+async def upload_documents(
     session: AsyncSession,
     user_id: str,
     kb_id: str,
@@ -47,7 +76,7 @@ async def upload_pdfs(
     if len(files) > s.pdf_max_batch:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            f"单次最多上传 {s.pdf_max_batch} 个 PDF",
+            f"单次最多上传 {s.pdf_max_batch} 个文件",
         )
     await _ensure_kb(session, user_id, kb_id)
 
@@ -55,19 +84,25 @@ async def upload_pdfs(
     storage = get_blob_storage()
     created: list[Document] = []
     skipped = 0
+    needs_preview: list[str] = []
 
     for up in files:
         raw_name = _safe_filename(up.filename)
-        if not raw_name.lower().endswith(".pdf"):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"仅支持 PDF：{raw_name}")
+        ext = Path(raw_name).suffix.lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"不支持的格式「{ext or raw_name}」。支持：{supported}",
+            )
+        file_type = detect_file_type(raw_name)
         data = await up.read()
         if len(data) > max_bytes:
             raise HTTPException(
                 status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 f"文件过大（上限 {s.pdf_max_upload_mb}MB）：{raw_name}",
             )
-        if not data.startswith(PDF_MAGIC):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"不是有效 PDF：{raw_name}")
+        _validate_file_magic(data, file_type, raw_name)
 
         md5_hex = hashlib.md5(data).hexdigest()
         dup = await session.execute(
@@ -90,11 +125,31 @@ async def upload_pdfs(
             kb_id=kb_id,
             user_id=user_id,
             filename=raw_name,
+            file_type=file_type.value,
             storage_key=key,
             status="pending",
             file_bytes=len(data),
             md5=md5_hex,
         )
+
+        if requires_preview(file_type):
+            doc.status = "preview"
+            doc.parse_stage = "解析预览"
+            try:
+                fspath = storage.filesystem_path(key)
+                result = await asyncio.to_thread(_parse_sync, fspath, raw_name, file_type)
+                doc.parsed_content = result.merged_content()[:200_000]
+                doc.parsed_title = result.title
+                doc.parsed_summary = result.summary
+                doc.title = result.title
+                doc.parse_progress = 100
+                doc.parse_stage = "待确认"
+            except Exception as e:
+                doc.status = "failed"
+                doc.error_message = str(e)[:4000]
+                doc.parse_stage = "解析失败"
+                log.exception("preview parse failed doc=%s", doc_id)
+
         session.add(doc)
         created.append(doc)
 
@@ -106,13 +161,107 @@ async def upload_pdfs(
     for d in created:
         await session.refresh(d)
         out.append(DocumentOut.model_validate(d))
+        if d.status == "preview":
+            needs_preview.append(d.id)
+            continue
+        if d.status == "failed":
+            continue
         if s.ingest_background_thread:
             log.info("ingest queue (BackgroundTasks): doc=%s", d.id)
             background_tasks.add_task(run_document_ingest, d.id)
         else:
             process_document_task.delay(d.id)
 
-    return DocumentUploadResponse(documents=out, skipped_duplicates=skipped)
+    return DocumentUploadResponse(documents=out, skipped_duplicates=skipped, needs_preview=needs_preview)
+
+
+# 兼容旧名
+upload_pdfs = upload_documents
+
+
+async def get_parsed_content(
+    session: AsyncSession,
+    user_id: str,
+    kb_id: str,
+    doc_id: str,
+) -> DocumentParsedContentOut:
+    doc = await get_document(session, user_id, kb_id, doc_id)
+    if doc.status not in ("preview", "done", "pending", "processing"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "当前文档无预览内容")
+    content = doc.parsed_content
+    if not content and doc.status == "done":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "该文档已完成自动解析，请查看解析条目")
+    if not content:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "预览内容为空")
+    return DocumentParsedContentOut(
+        doc_id=doc.id,
+        filename=doc.filename,
+        file_type=doc.file_type,
+        title=doc.parsed_title or doc.title,
+        summary=doc.parsed_summary,
+        content=content,
+        status=doc.status,
+    )
+
+
+async def update_parsed_content(
+    session: AsyncSession,
+    user_id: str,
+    kb_id: str,
+    doc_id: str,
+    body: DocumentParsedContentUpdate,
+) -> DocumentParsedContentOut:
+    doc = await get_document(session, user_id, kb_id, doc_id)
+    if doc.status != "preview":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅「待预览」状态的文档可编辑")
+    doc.parsed_content = body.content.strip()
+    if body.title is not None:
+        doc.parsed_title = body.title.strip()[:512] or None
+        doc.title = doc.parsed_title
+    if body.summary is not None:
+        doc.parsed_summary = body.summary.strip()[:500] or None
+    await session.commit()
+    await session.refresh(doc)
+    return DocumentParsedContentOut(
+        doc_id=doc.id,
+        filename=doc.filename,
+        file_type=doc.file_type,
+        title=doc.parsed_title or doc.title,
+        summary=doc.parsed_summary,
+        content=doc.parsed_content or "",
+        status=doc.status,
+    )
+
+
+async def confirm_document_import(
+    session: AsyncSession,
+    user_id: str,
+    kb_id: str,
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+) -> DocumentConfirmImportResponse:
+    doc = await get_document(session, user_id, kb_id, doc_id)
+    if doc.status != "preview":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅「待预览」状态的文档可确认入库")
+    if not (doc.parsed_content or "").strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "预览内容为空，请先编辑或重新上传")
+
+    doc.status = "pending"
+    doc.error_message = None
+    doc.parse_progress = 0
+    doc.parse_stage = "排队中"
+    await session.commit()
+    await session.refresh(doc)
+
+    from app.workers.document_tasks import process_document_task, run_document_ingest
+
+    settings = get_settings()
+    if settings.ingest_background_thread:
+        background_tasks.add_task(run_document_ingest, doc.id)
+    else:
+        process_document_task.delay(doc.id)
+
+    return DocumentConfirmImportResponse(document=DocumentOut.model_validate(doc))
 
 
 async def list_documents(session: AsyncSession, user_id: str, kb_id: str) -> list[Document]:
@@ -145,6 +294,8 @@ async def retry_document_parse(
         )
     doc.status = "pending"
     doc.error_message = None
+    doc.parse_progress = 0
+    doc.parse_stage = "排队中"
     await session.commit()
     await session.refresh(doc)
 
@@ -179,17 +330,41 @@ def document_filesystem_path(doc: Document) -> str:
     return str(path)
 
 
+def document_media_type(doc: Document) -> str:
+    ext = Path(doc.filename).suffix.lower()
+    ext_mime = {
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".doc": "application/msword",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xls": "application/vnd.ms-excel",
+        ".csv": "text/csv",
+        ".md": "text/markdown",
+        ".markdown": "text/markdown",
+        ".txt": "text/plain",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }
+    if ext in ext_mime:
+        return ext_mime[ext]
+    ft = FileType(doc.file_type) if doc.file_type else FileType.PDF
+    from app.ingest.types import MIME_BY_TYPE
+
+    return MIME_BY_TYPE.get(ft, "application/octet-stream")
+
+
 async def delete_document(
     session: AsyncSession,
     user_id: str,
     kb_id: str,
     doc_id: str,
 ) -> None:
-    """删除文档 PDF、关联解析条目及检索索引。"""
+    """删除文档文件、关联解析条目及检索索引。"""
     doc = await get_document(session, user_id, kb_id, doc_id)
     q = await session.execute(select(KnowledgeItem).where(KnowledgeItem.document_id == doc_id))
     items = list(q.scalars().all())
-    chunk_ids = [i.chunk_id for i in items if i.chunk_id]
 
     for item in items:
         await session.delete(item)
@@ -210,5 +385,4 @@ async def delete_document(
     except Exception:
         log.warning("delete document %s: blob remove failed key=%s", doc_id, storage_key, exc_info=True)
 
-    if chunk_ids:
-        await asyncio.to_thread(item_indexing.remove_index_chunks, chunk_ids)
+    await asyncio.to_thread(item_indexing.remove_index_for_document, doc_id)

@@ -5,10 +5,22 @@
 .markdown-preview-root h2,
 .markdown-preview-root h3,
 .markdown-preview-root h4,
+.streamdown-chat-root h1,
+.streamdown-chat-root h2,
+.streamdown-chat-root h3,
+.streamdown-chat-root h4,
 .markdown-preview-root .streamdown-static h1,
 .markdown-preview-root .streamdown-static h2,
 .markdown-preview-root .streamdown-static h3,
-.markdown-preview-root .streamdown-static h4 {
+.markdown-preview-root .streamdown-static h4,
+.streamdown-chat-root .streamdown-static h1,
+.streamdown-chat-root .streamdown-static h2,
+.streamdown-chat-root .streamdown-static h3,
+.streamdown-chat-root .streamdown-static h4,
+.streamdown-chat-root .streamdown-chat h1,
+.streamdown-chat-root .streamdown-chat h2,
+.streamdown-chat-root .streamdown-chat h3,
+.streamdown-chat-root .streamdown-chat h4 {
   font-weight: 600;
   color: #0f172a;
   margin-top: 1.25em;
@@ -16,46 +28,84 @@
   line-height: 1.35;
 }
 .markdown-preview-root h1,
-.markdown-preview-root .streamdown-static h1 { font-size: 1.5rem; }
+.markdown-preview-root .streamdown-static h1,
+.streamdown-chat-root h1,
+.streamdown-chat-root .streamdown-static h1,
+.streamdown-chat-root .streamdown-chat h1 { font-size: 1.5rem; }
 .markdown-preview-root h2,
-.markdown-preview-root .streamdown-static h2 { font-size: 1.25rem; }
+.markdown-preview-root .streamdown-static h2,
+.streamdown-chat-root h2,
+.streamdown-chat-root .streamdown-static h2,
+.streamdown-chat-root .streamdown-chat h2 { font-size: 1.25rem; }
 .markdown-preview-root h3,
-.markdown-preview-root .streamdown-static h3 { font-size: 1.125rem; }
+.markdown-preview-root .streamdown-static h3,
+.streamdown-chat-root h3,
+.streamdown-chat-root .streamdown-static h3,
+.streamdown-chat-root .streamdown-chat h3 { font-size: 1.125rem; }
 .markdown-preview-root h4,
-.markdown-preview-root .streamdown-static h4 { font-size: 1rem; }
+.markdown-preview-root .streamdown-static h4,
+.streamdown-chat-root h4,
+.streamdown-chat-root .streamdown-static h4,
+.streamdown-chat-root .streamdown-chat h4 { font-size: 1rem; }
 .markdown-preview-root p,
-.markdown-preview-root .streamdown-static p {
+.markdown-preview-root .streamdown-static p,
+.streamdown-chat-root p,
+.streamdown-chat-root .streamdown-static p,
+.streamdown-chat-root .streamdown-chat p {
   margin: 0.75em 0;
 }
 .markdown-preview-root ul,
 .markdown-preview-root ol,
 .markdown-preview-root .streamdown-static ul,
-.markdown-preview-root .streamdown-static ol {
+.markdown-preview-root .streamdown-static ol,
+.streamdown-chat-root ul,
+.streamdown-chat-root ol,
+.streamdown-chat-root .streamdown-static ul,
+.streamdown-chat-root .streamdown-static ol,
+.streamdown-chat-root .streamdown-chat ul,
+.streamdown-chat-root .streamdown-chat ol {
   margin: 0.75em 0;
   padding-left: 1.5em;
 }
 .markdown-preview-root ul,
-.markdown-preview-root .streamdown-static ul { list-style-type: disc; }
+.markdown-preview-root .streamdown-static ul,
+.streamdown-chat-root ul,
+.streamdown-chat-root .streamdown-static ul,
+.streamdown-chat-root .streamdown-chat ul { list-style-type: disc; }
 .markdown-preview-root ol,
-.markdown-preview-root .streamdown-static ol { list-style-type: decimal; }
+.markdown-preview-root .streamdown-static ol,
+.streamdown-chat-root ol,
+.streamdown-chat-root .streamdown-static ol,
+.streamdown-chat-root .streamdown-chat ol { list-style-type: decimal; }
 .markdown-preview-root li,
-.markdown-preview-root .streamdown-static li {
+.markdown-preview-root .streamdown-static li,
+.streamdown-chat-root li,
+.streamdown-chat-root .streamdown-static li,
+.streamdown-chat-root .streamdown-chat li {
   margin: 0.25em 0;
 }
-.markdown-preview-root .streamdown-static strong {
+.markdown-preview-root .streamdown-static strong,
+.streamdown-chat-root .streamdown-static strong,
+.streamdown-chat-root .streamdown-chat strong {
   font-weight: 600;
 }
-.markdown-preview-root .streamdown-static a {
+.markdown-preview-root .streamdown-static a,
+.streamdown-chat-root .streamdown-static a,
+.streamdown-chat-root .streamdown-chat a {
   color: #0066ff;
   text-decoration: underline;
 }
-.markdown-preview-root .streamdown-static blockquote {
+.markdown-preview-root .streamdown-static blockquote,
+.streamdown-chat-root .streamdown-static blockquote,
+.streamdown-chat-root .streamdown-chat blockquote {
   border-left: 3px solid #cbd5e1;
   padding-left: 1em;
   color: #64748b;
   margin: 1em 0;
 }
-.markdown-preview-root .streamdown-static pre {
+.markdown-preview-root .streamdown-static pre,
+.streamdown-chat-root .streamdown-static pre,
+.streamdown-chat-root .streamdown-chat pre {
   margin: 1em 0;
   border-radius: 0.5rem;
   overflow-x: auto;

@@ -1,7 +1,8 @@
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
 import { cjk } from "@streamdown/cjk";
+import { prepareAssistantMarkdown } from "@/utils/prepareAssistantMarkdown";
 
 /** 模块级单例，避免每次渲染新建插件实例 */
 const plugins = { code, cjk };
@@ -18,6 +19,8 @@ type Props = {
  * @see https://streamdown.ai/docs/usage
  */
 export const AssistantMarkdown = memo(function AssistantMarkdown({ markdown, isStreaming }: Props) {
+  const body = useMemo(() => prepareAssistantMarkdown(markdown), [markdown]);
+
   return (
     <div className="streamdown-chat-root text-sm leading-relaxed text-slate-800 [&_.streamdown]:max-w-none">
       <Streamdown
@@ -28,7 +31,7 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({ markdown, isS
         controls={{ code: { copy: true, download: true } }}
         className={isStreaming ? "streamdown-chat" : "streamdown-static"}
       >
-        {markdown}
+        {body}
       </Streamdown>
     </div>
   );

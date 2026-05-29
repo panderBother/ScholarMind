@@ -1,0 +1,5 @@
+{"question": "什么是混合检索？", "ground_truth": "混合检索结合向量语义检索与 BM25 关键词检索，通过 RRF 融合并可选 Rerank 精排。", "contexts": ["KnowMind 使用 Chroma 向量索引与 Whoosh BM25 全文索引，经 RRF 融合后送入 Rerank 模型精排。"], "answer": "混合检索将向量语义检索与 BM25 关键词检索结合，使用 RRF 融合结果并可用 Rerank 精排。"}
+{"question": "知识条目有哪些生命周期状态？", "ground_truth": "草稿、已发布、已归档三种状态；仅已发布条目参与检索。", "contexts": ["知识条目支持 draft、published、archived 生命周期；检索默认过滤 published。"], "answer": "知识条目有草稿、已发布、已归档三种状态，只有已发布条目会被检索引用。"}
+{"question": "RAG 对话如何注入检索上下文？", "ground_truth": "对话前按 knowledge_base_id 调用 hybrid_search，将命中片段格式化后写入 system prompt。", "contexts": ["rag_context 模块在流式对话前检索 top-k 片段，格式化为摘录标题与正文注入模型上下文。"], "answer": "系统在对话前对所选知识库做 hybrid_search，把检索到的片段格式化后注入 prompt。"}
+{"question": "文档解析支持哪些格式？", "ground_truth": "PDF、DOCX、Excel、Markdown、纯文本及图片 OCR。", "contexts": ["ingest 注册表支持 pdf、docx、xlsx、md、txt 及 png/jpg 等图片格式，经 OCR 或 VLM 抽取文本。"], "answer": "支持 PDF、Word、Excel、Markdown、文本及图片 OCR 等多种格式入库。"}
+{"question": "评估看板展示哪些 RAGAS 指标？", "ground_truth": "忠实度、答案相关性、上下文召回、上下文精准四类核心指标。", "contexts": ["RAGAS 常用指标包括 faithfulness、answer_relevancy、context_recall、context_precision。"], "answer": "看板展示忠实度、答案相关性、上下文召回与上下文精准四项 RAGAS 指标。"}

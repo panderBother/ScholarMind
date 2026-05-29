@@ -12,6 +12,19 @@ export type ChatToolResult = {
   result: Record<string, unknown>;
 };
 
+/** 对话 RAG 检索命中，用于引用溯源 */
+export type RagSourceDto = {
+  index: number;
+  chunk_id?: string | null;
+  item_id?: string | null;
+  document_id?: string | null;
+  title: string;
+  meta?: string | null;
+  snippet: string;
+  page?: number | null;
+  score?: number | null;
+};
+
 export type ChatRequestBody = {
   message: string;
   knowledge_base_id: string | null;
@@ -19,6 +32,8 @@ export type ChatRequestBody = {
   web_search: boolean;
   /** 启用服务端本地文件读写（OpenAI tools） */
   file_tools?: boolean;
+  /** 启用已导入且带 url 的远程外部 MCP */
+  external_mcp?: boolean;
   /** 续聊时传入；不传则服务端新建会话并在 SSE 中返回 conversation_id */
   conversation_id?: string | null;
 };
@@ -28,10 +43,21 @@ export type ChatResponseBody = {
   trace_id: string;
 };
 
+export type AgentStepStatus = "running" | "done" | "error" | "skipped";
+
+export type AgentStepEvent = {
+  step: string;
+  status: AgentStepStatus;
+  detail?: string;
+  meta?: Record<string, unknown>;
+};
+
 export type ChatStreamHandlers = {
   onTraceId: (traceId: string) => void;
   /** 多轮记忆：服务端新建或确认的会话 id */
   onConversationId?: (conversationId: string, isNew: boolean) => void;
+  /** Agent 编排步骤（RAG、联网、工具等） */
+  onAgentStep?: (payload: AgentStepEvent) => void;
   onDelta: (text: string) => void;
   /** 模型推理 / 思维链增量（如 reasoning_content） */
   onThinkingDelta?: (text: string) => void;
@@ -39,6 +65,8 @@ export type ChatStreamHandlers = {
   onError?: (message: string) => void;
   /** 模型调用本地文件读写工具后的结果 */
   onToolResult?: (payload: ChatToolResult) => void;
+  /** 知识库 RAG 检索引用来源 */
+  onRagSources?: (kbId: string, sources: RagSourceDto[]) => void;
   /** 服务端文件操作日志，如「已执行写入操作」 */
   onFileLog?: (message: string) => void;
   onDone: () => void;
@@ -71,7 +99,8 @@ export async function sendChatMessage(body: ChatRequestBody): Promise<ChatRespon
       knowledge_base_id: body.knowledge_base_id,
       deep_research: body.deep_research,
       web_search: body.web_search,
-      file_tools: body.file_tools ?? true,
+      file_tools: body.file_tools ?? false,
+      external_mcp: body.external_mcp ?? false,
       conversation_id: body.conversation_id ?? null,
     }),
   });
@@ -107,7 +136,8 @@ export async function streamChatMessage(
       knowledge_base_id: body.knowledge_base_id,
       deep_research: body.deep_research,
       web_search: body.web_search,
-      file_tools: body.file_tools ?? true,
+      file_tools: body.file_tools ?? false,
+      external_mcp: body.external_mcp ?? false,
       conversation_id: body.conversation_id ?? null,
     }),
     signal,
@@ -145,6 +175,26 @@ export async function streamChatMessage(
       handlers.onConversationId?.(cid, isNew);
       return;
     }
+    if (msg.type === "agent_step") {
+      const step = typeof (msg as { step?: string }).step === "string" ? (msg as { step: string }).step : "";
+      const statusRaw = (msg as { status?: string }).status;
+      const status =
+        statusRaw === "running" || statusRaw === "done" || statusRaw === "error" || statusRaw === "skipped"
+          ? statusRaw
+          : "done";
+      if (step) {
+        handlers.onAgentStep?.({
+          step,
+          status,
+          detail: typeof (msg as { detail?: string }).detail === "string" ? (msg as { detail: string }).detail : undefined,
+          meta:
+            typeof (msg as { meta?: unknown }).meta === "object" && (msg as { meta?: unknown }).meta !== null
+              ? ((msg as { meta: Record<string, unknown> }).meta as Record<string, unknown>)
+              : undefined,
+        });
+      }
+      return;
+    }
     if (msg.type === "thinking_delta" && typeof msg.text === "string") {
       handlers.onThinkingDelta?.(msg.text);
       return;
@@ -170,6 +220,22 @@ export async function streamChatMessage(
           ? ((msg as { result: Record<string, unknown> }).result as Record<string, unknown>)
           : {};
       handlers.onToolResult?.({ tool, ok, result });
+      return;
+    }
+    if (msg.type === "rag_sources") {
+      const kbId = typeof (msg as { kb_id?: string }).kb_id === "string" ? (msg as { kb_id: string }).kb_id : "";
+      const raw = (msg as { sources?: unknown }).sources;
+      if (kbId && Array.isArray(raw)) {
+        const sources = raw.filter(
+          (s): s is RagSourceDto =>
+            typeof s === "object" &&
+            s !== null &&
+            typeof (s as RagSourceDto).index === "number" &&
+            typeof (s as RagSourceDto).title === "string" &&
+            typeof (s as RagSourceDto).snippet === "string",
+        );
+        if (sources.length) handlers.onRagSources?.(kbId, sources);
+      }
       return;
     }
     if (msg.type === "done") {

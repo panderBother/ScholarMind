@@ -61,3 +61,13 @@ async def log_rag_retrieval(
     )
     session.add(row)
     await session.flush()
+
+    from app.services.usage_analytics_service import record_rag_cites
+
+    await record_rag_cites(
+        session,
+        user_id=user_id,
+        kb_id=kb_id,
+        conversation_id=conversation_id,
+        hits=hits,
+    )

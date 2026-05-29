@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { BookOpen, LayoutGrid, List, Plus, Search } from "lucide-react";
+import { BarChart3, BookOpen, LayoutGrid, Link2, List, Plus, Search, Sparkles } from "lucide-react";
 
 import { ActionIcons } from "@/components/ui/ActionIcons";
 import { FormDialog } from "@/components/ui/FormDialog";
@@ -280,6 +280,32 @@ export function KnowledgeBasesPage() {
                   <dd className="font-semibold text-slate-900">{formatDate(kb.updated_at)}</dd>
                 </div>
               </dl>
+              <button
+                type="button"
+                onClick={() => nav(`/knowledge-bases/${kb.id}/analytics`)}
+                className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 py-2 text-xs font-medium text-slate-700 transition hover:border-primary/40 hover:bg-primary-soft hover:text-primary"
+              >
+                <BarChart3 className="h-3.5 w-3.5" />
+                使用热度
+              </button>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => nav(`/production?kb_id=${encodeURIComponent(kb.id)}&tab=url`)}
+                  className="inline-flex items-center justify-center gap-1 rounded-lg border border-sky-200 bg-sky-50 py-2 text-[11px] font-medium text-sky-900 hover:bg-sky-100"
+                >
+                  <Link2 className="h-3.5 w-3.5" />
+                  URL 采集
+                </button>
+                <button
+                  type="button"
+                  onClick={() => nav(`/production?kb_id=${encodeURIComponent(kb.id)}&tab=distill`)}
+                  className="inline-flex items-center justify-center gap-1 rounded-lg border border-violet-200 bg-violet-50 py-2 text-[11px] font-medium text-violet-900 hover:bg-violet-100"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  缺口蒸馏
+                </button>
+              </div>
             </article>
           ))}
 

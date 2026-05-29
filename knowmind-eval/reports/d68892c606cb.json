@@ -1,0 +1,57 @@
+{
+  "run_id": "d68892c606cb",
+  "created_at": "2026-05-27T15:22:19+00:00",
+  "dataset": "sample.jsonl",
+  "version": "v2.1.0",
+  "mode": "simple",
+  "sample_count": 5,
+  "metrics": {
+    "faithfulness": 0.0882,
+    "answer_relevancy": 0.0667,
+    "context_recall": 0.0669,
+    "context_precision": 0.0882
+  },
+  "deltas": {
+    "faithfulness": 0.0,
+    "answer_relevancy": 0.0,
+    "context_recall": 0.0,
+    "context_precision": 0.0
+  },
+  "trend": [
+    {
+      "label": "05/27",
+      "faithfulness": 8.8,
+      "answer_relevancy": 6.7,
+      "context_recall": 6.7,
+      "context_precision": 8.8
+    }
+  ],
+  "version_compare": [
+    {
+      "name": "忠实度",
+      "current": 8.8,
+      "baseline": 8.8
+    },
+    {
+      "name": "答案相关性",
+      "current": 6.7,
+      "baseline": 6.7
+    },
+    {
+      "name": "上下文召回",
+      "current": 6.7,
+      "baseline": 6.7
+    },
+    {
+      "name": "上下文精准",
+      "current": 8.8,
+      "baseline": 8.8
+    }
+  ],
+  "stats": {
+    "total_runs": 1,
+    "question_count": 5,
+    "avg_latency_s": 1.9,
+    "pass_rate": 0.6
+  }
+}

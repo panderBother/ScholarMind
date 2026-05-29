@@ -4,10 +4,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_id
 from app.db.session import get_db
-from app.schemas.document import DocumentOut, DocumentUploadResponse
+from app.schemas.document import (
+    DocumentConfirmImportResponse,
+    DocumentOut,
+    DocumentParsedContentOut,
+    DocumentParsedContentUpdate,
+    DocumentUploadResponse,
+)
 from app.services import document_service
 
 router = APIRouter()
+
+SUPPORTED_FORMATS_HINT = (
+    "PDF、DOCX/DOC、Excel/CSV、Markdown/TXT、PNG/JPG 等图片"
+)
 
 
 @router.get("/{kb_id}/documents", response_model=list[DocumentOut])
@@ -30,7 +40,7 @@ async def upload_documents(
 ):
     if not files:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "请选择至少一个文件")
-    return await document_service.upload_pdfs(session, user_id, kb_id, files, background_tasks)
+    return await document_service.upload_documents(session, user_id, kb_id, files, background_tasks)
 
 
 @router.get("/{kb_id}/documents/{doc_id}", response_model=DocumentOut)
@@ -44,6 +54,40 @@ async def get_document(
     return DocumentOut.model_validate(doc)
 
 
+@router.get("/{kb_id}/documents/{doc_id}/parsed-content", response_model=DocumentParsedContentOut)
+async def get_document_parsed_content(
+    kb_id: str,
+    doc_id: str,
+    session: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    return await document_service.get_parsed_content(session, user_id, kb_id, doc_id)
+
+
+@router.put("/{kb_id}/documents/{doc_id}/parsed-content", response_model=DocumentParsedContentOut)
+async def update_document_parsed_content(
+    kb_id: str,
+    doc_id: str,
+    body: DocumentParsedContentUpdate,
+    session: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    return await document_service.update_parsed_content(session, user_id, kb_id, doc_id, body)
+
+
+@router.post("/{kb_id}/documents/{doc_id}/confirm-import", response_model=DocumentConfirmImportResponse)
+async def confirm_document_import(
+    kb_id: str,
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    return await document_service.confirm_document_import(
+        session, user_id, kb_id, doc_id, background_tasks
+    )
+
+
 @router.get("/{kb_id}/documents/{doc_id}/file")
 async def get_document_file(
     kb_id: str,
@@ -55,7 +99,7 @@ async def get_document_file(
     path = document_service.document_filesystem_path(doc)
     return FileResponse(
         path,
-        media_type="application/pdf",
+        media_type=document_service.document_media_type(doc),
         filename=doc.filename,
         content_disposition_type="inline",
     )

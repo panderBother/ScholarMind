@@ -16,6 +16,10 @@ class ChatRequest(BaseModel):
         default=False,
         description="启用本地文件读写工具（需服务端 file_tools_enabled）",
     )
+    external_mcp: bool = Field(
+        default=False,
+        description="启用已配置的远程 URL 型外部 MCP 工具（需在工具页导入并开启）",
+    )
     conversation_id: str | None = Field(
         default=None,
         description="不传或空则新建会话；传入已有 id 则续聊并写入 MySQL/Redis/向量索引",

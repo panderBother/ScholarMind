@@ -105,6 +105,21 @@ def whoosh_delete_chunk(root: str | Path, chunk_id: str) -> None:
     writer.commit()
 
 
+def whoosh_delete_chunks(root: str | Path, chunk_ids: list[str]) -> None:
+    for cid in chunk_ids:
+        if cid:
+            whoosh_delete_chunk(root, cid)
+
+
+def whoosh_delete_chunks_for_doc(root: str | Path, doc_id: str) -> None:
+    if not doc_id:
+        return
+    ix = open_or_create_index(root)
+    writer = AsyncWriter(ix)
+    writer.delete_by_term("doc_id", doc_id)
+    writer.commit()
+
+
 def whoosh_search(
     root: str | Path,
     *,

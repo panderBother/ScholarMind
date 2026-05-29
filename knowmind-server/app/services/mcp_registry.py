@@ -177,6 +177,9 @@ def import_mcp_json(user_id: str, raw_json: str) -> ImportMcpResponse:
     now = datetime.now(timezone.utc).isoformat()
 
     for name, cfg in servers.items():
+        if not (cfg.get("url") or "").strip():
+            skipped += 1
+            continue
         if name in existing_names:
             skipped += 1
             continue

@@ -36,7 +36,11 @@ def _thresholds() -> tuple[int, float, int]:
 async def list_gaps(session: AsyncSession, user_id: str, kb_id: str) -> list[KnowledgeGap]:
     q = (
         select(KnowledgeGap)
-        .where(KnowledgeGap.kb_id == kb_id, KnowledgeGap.user_id == user_id, KnowledgeGap.status == "open")
+        .where(
+            KnowledgeGap.kb_id == kb_id,
+            KnowledgeGap.user_id == user_id,
+            KnowledgeGap.status.in_(("open", "draft_generated")),
+        )
         .order_by(KnowledgeGap.updated_at.desc())
     )
     r = await session.execute(q)
@@ -108,7 +112,7 @@ async def analyze_gaps(session: AsyncSession, user_id: str, kb_id: str) -> list[
         created.append(gap)
 
     await session.commit()
-    return created
+    return await list_gaps(session, user_id, kb_id)
 
 
 async def _upsert_gap(

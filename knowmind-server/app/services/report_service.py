@@ -8,12 +8,13 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.orm import Document, KnowledgeItem, ResearchReport, new_uuid
+from app.models.orm import ResearchReport, new_uuid
 from app.services.conversation_service import get_conversation_for_user, load_messages_ordered
 from app.services.edgefn_client import ChatTurnResult, complete_chat_turn
 from app.services.knowledge_item_service import _ensure_kb
 from app.services.rag_context import search_kb
 from app.http_client import friendly_connect_error
+from app.services.rag_citations import hits_to_source_payload, resolve_hit_titles
 from app.services.rag_logging_service import RagHit, log_rag_retrieval
 
 log = logging.getLogger(__name__)
@@ -232,50 +233,6 @@ async def _generate_report_markdown(messages: list[dict[str, str]]) -> tuple[str
     )
 
 
-def _hits_to_citations(hits: list[RagHit], titles: dict[str, str]) -> list[dict]:
-    out: list[dict] = []
-    for i, h in enumerate(hits, 1):
-        key = h.item_id or h.doc_id or h.chunk_id
-        title = titles.get(key, f"摘录 {i}")
-        snippet = (h.text or "").strip()
-        if len(snippet) > 400:
-            snippet = snippet[:400] + "…"
-        meta_parts: list[str] = []
-        if h.page is not None:
-            meta_parts.append(f"第 {h.page + 1} 页")
-        if h.score:
-            meta_parts.append(f"相关度 {h.score:.2f}")
-        out.append(
-            {
-                "index": i,
-                "chunk_id": h.chunk_id or None,
-                "item_id": h.item_id or None,
-                "document_id": h.doc_id or None,
-                "title": title,
-                "meta": " · ".join(meta_parts) if meta_parts else None,
-                "snippet": snippet,
-                "page": h.page,
-                "score": round(h.score, 4) if h.score else None,
-            }
-        )
-    return out
-
-
-async def _resolve_hit_titles(session: AsyncSession, hits: list[RagHit]) -> dict[str, str]:
-    titles: dict[str, str] = {}
-    item_ids = {h.item_id for h in hits if h.item_id}
-    doc_ids = {h.doc_id for h in hits if h.doc_id}
-    if item_ids:
-        q = await session.execute(select(KnowledgeItem).where(KnowledgeItem.id.in_(item_ids)))
-        for item in q.scalars().all():
-            titles[item.id] = item.title
-    if doc_ids:
-        q = await session.execute(select(Document).where(Document.id.in_(doc_ids)))
-        for doc in q.scalars().all():
-            titles[doc.id] = doc.title or doc.filename
-    return titles
-
-
 async def generate_report_from_conversation(
     session: AsyncSession,
     user_id: str,
@@ -314,8 +271,8 @@ async def generate_report_from_conversation(
         conversation_id=conversation_id,
         hits=rag.hits,
     )
-    titles = await _resolve_hit_titles(session, rag.hits)
-    citations = _hits_to_citations(rag.hits, titles)
+    titles = await resolve_hit_titles(session, rag.hits)
+    citations = hits_to_source_payload(rag.hits, titles)
 
     evidence = rag.markdown or "（未检索到知识库摘录）"
     prompt = f"""请基于下列对话与知识库摘录，撰写一篇中文 Markdown 研究报告。

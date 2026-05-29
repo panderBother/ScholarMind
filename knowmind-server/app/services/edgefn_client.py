@@ -122,12 +122,16 @@ def build_chat_messages(
     web_search: bool,
     kb_context: str | None = None,
     file_tools: bool = False,
+    expert_prompt: str | None = None,
 ) -> list[dict[str, str]]:
-    parts = _base_system_parts(
-        deep_research=deep_research,
-        web_search=web_search,
-        file_tools=file_tools,
-    )
+    if expert_prompt and expert_prompt.strip():
+        parts = [expert_prompt.strip()]
+    else:
+        parts = _base_system_parts(
+            deep_research=deep_research,
+            web_search=web_search,
+            file_tools=file_tools,
+        )
     ctx = (kb_context or "").strip()
     if ctx:
         if "## 联网搜索结果" in ctx:
@@ -158,15 +162,19 @@ def build_chat_messages_multi(
     memory_summaries: str,
     memory_retrieval: str,
     history_pairs: list[tuple[str, str]],
+    expert_prompt: str | None = None,
 ) -> list[dict[str, str]]:
     """
     多轮：system 内放稳定块 A（说明+KB）+ B（摘要）+ 检索摘录；其后按序拼接 user/assistant（含当前 user）。
     """
-    parts = _base_system_parts(
-        deep_research=deep_research,
-        web_search=web_search,
-        file_tools=file_tools,
-    )
+    if expert_prompt and expert_prompt.strip():
+        parts = [expert_prompt.strip()]
+    else:
+        parts = _base_system_parts(
+            deep_research=deep_research,
+            web_search=web_search,
+            file_tools=file_tools,
+        )
     ctx = (kb_context or "").strip()
     if ctx:
         if "## 联网搜索结果" in ctx:

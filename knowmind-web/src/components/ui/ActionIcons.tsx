@@ -66,9 +66,9 @@ export function ActionIcons({ onPreview, onEdit, onPublish, onArchive, onDelete 
             e.stopPropagation();
             onArchive();
           }}
-          className={`${btn} hover:bg-amber-50 hover:text-amber-600`}
-          title="归档"
-          aria-label="归档"
+          className={`${btn} hover:bg-red-50 hover:text-red-600`}
+          title="下架"
+          aria-label="下架"
         >
           <Archive className="h-4 w-4" />
         </button>

@@ -54,6 +54,24 @@ def test_whoosh_search_published_hits(whoosh_root: Path) -> None:
     draft_hits = whoosh_search(whoosh_root, kb_id=kb_id, query="ZetaDraftKeyword", top_k=10)
     assert draft_hits == []
 
+    whoosh_upsert_chunks(
+        whoosh_root,
+        [
+            {
+                "chunk_id": "c-arch-1",
+                "kb_id": kb_id,
+                "user_id": "u1",
+                "doc_id": "",
+                "item_id": "item-arch",
+                "page": 0,
+                "text": "ArchivedOnlyKeywordXYZ",
+                "lifecycle_status": "archived",
+            },
+        ],
+    )
+    archived_only = whoosh_search(whoosh_root, kb_id=kb_id, query="ArchivedOnlyKeywordXYZ", top_k=10)
+    assert archived_only == []
+
     empty = whoosh_search(whoosh_root, kb_id=kb_id, query="   ", top_k=10)
     assert empty == []
 

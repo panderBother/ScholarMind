@@ -54,6 +54,21 @@ class ChromaVectorIndex:
         except Exception as e:
             log.warning("chroma delete failed: %s", e)
 
+    def list_chunk_ids_for_doc(self, doc_id: str) -> list[str]:
+        if not doc_id:
+            return []
+        try:
+            raw = self._col.get(where={"doc_id": doc_id}, include=[])
+        except Exception as e:
+            log.warning("chroma list by doc_id failed: %s", e)
+            return []
+        ids = raw.get("ids") if isinstance(raw, dict) else None
+        if not ids:
+            return []
+        if ids and isinstance(ids[0], list):
+            return [str(x) for x in ids[0] if x]
+        return [str(x) for x in ids if x]
+
     def query_similar(
         self,
         *,

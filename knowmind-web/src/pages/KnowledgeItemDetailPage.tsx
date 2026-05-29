@@ -6,6 +6,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { MarkdownPreview } from "@/components/MarkdownPreview";
 import { useUi } from "@/components/ui/UiProvider";
 import { flattenCategoryTree, listCategoryTree } from "@/services/categories";
+import { getDocument } from "@/services/documents";
 import {
   archiveKnowledgeItem,
   deleteKnowledgeItem,
@@ -15,8 +16,8 @@ import {
   type KnowledgeItemDto,
 } from "@/services/knowledgeItems";
 import {
+  buildKnowledgeItemDeleteConfirm,
   canArchiveKnowledgeItem,
-  canDeleteKnowledgeItem,
   isKnowledgeItemContentReadonly,
   SOURCE_LABEL,
 } from "@/utils/knowledgeItemUtils";
@@ -25,13 +26,13 @@ function StatusPill({ status }: { status: string }) {
   const map: Record<string, string> = {
     published: "bg-emerald-50 text-emerald-700",
     draft: "bg-amber-50 text-amber-700",
-    archived: "bg-slate-100 text-slate-600",
+    archived: "bg-red-50 text-red-700",
     disabled: "bg-red-50 text-red-700",
   };
   const label: Record<string, string> = {
     published: "已发布",
     draft: "草稿",
-    archived: "已归档",
+    archived: "已下架",
     disabled: "已下架",
   };
   return (
@@ -152,29 +153,35 @@ export function KnowledgeItemDetailPage() {
   const onArchive = async () => {
     if (!kbId || !item) return;
     const ok = await confirm({
-      title: "归档条目",
-      message: `归档后「${item.title}」将不再参与检索。`,
-      confirmText: "归档",
+      title: "下架条目",
+      message: `下架后「${item.title}」将不再参与检索与对话引用。`,
+      confirmText: "下架",
     });
     if (!ok) return;
     try {
       const next = await archiveKnowledgeItem(kbId, item.id);
       setItem(next);
-      message.success("已归档");
+      message.success("已下架");
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "归档失败");
+      setErr(e instanceof Error ? e.message : "下架失败");
     }
   };
 
   const onDelete = async () => {
     if (!kbId || !item) return;
-    if (item.source_type === "document") {
-      setErr("文档解析条目请通过删除文档移除");
-      return;
+    let documentLabel: string | null = null;
+    if (item.document_id) {
+      try {
+        const doc = await getDocument(kbId, item.document_id);
+        documentLabel = doc.title || doc.filename;
+      } catch {
+        documentLabel = null;
+      }
     }
+    const { title, message } = buildKnowledgeItemDeleteConfirm(item, documentLabel);
     const ok = await confirm({
-      title: "删除条目",
-      message: `确定删除「${item.title}」？此操作不可恢复。`,
+      title,
+      message,
       confirmText: "删除",
       type: "danger",
     });
@@ -182,7 +189,7 @@ export function KnowledgeItemDetailPage() {
     setDeleting(true);
     try {
       await deleteKnowledgeItem(kbId, item.id);
-      message.success("条目已删除");
+      message.success(item.document_id ? "条目及关联文档已删除" : "条目已删除");
       nav("/documents", { state: { kbId, viewTab: "条目视图" } });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "删除失败");
@@ -381,22 +388,20 @@ export function KnowledgeItemDetailPage() {
               <button
                 type="button"
                 onClick={() => void onArchive()}
-                className="rounded-xl border border-amber-200 px-4 py-2.5 text-sm text-amber-800 hover:bg-amber-50"
+                className="rounded-xl border border-red-200 px-4 py-2.5 text-sm text-red-700 hover:bg-red-50"
               >
-                归档
+                下架
               </button>
             ) : null}
-            {canDeleteKnowledgeItem(item) ? (
-              <button
-                type="button"
-                disabled={deleting}
-                onClick={() => void onDelete()}
-                className="inline-flex items-center gap-1 rounded-xl border border-red-200 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
-              >
-                <Trash2 className="h-4 w-4" />
-                删除
-              </button>
-            ) : null}
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={() => void onDelete()}
+              className="inline-flex items-center gap-1 rounded-xl border border-red-200 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
+            >
+              <Trash2 className="h-4 w-4" />
+              删除
+            </button>
           </div>
         ) : null}
       </div>

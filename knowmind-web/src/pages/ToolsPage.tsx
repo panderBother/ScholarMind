@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, Plug, Trash2, Upload } from "lucide-react";
+import { BookOpen, Download, Plug, Trash2, Upload } from "lucide-react";
+import {
+  downloadMcpManifest,
+  downloadSkillJson,
+  downloadSkillMarkdown,
+  fetchSkillJson,
+  type SkillExportJsonDto,
+} from "@/services/knowledgeExport";
+import { listKnowledgeBases, type KnowledgeBaseDto } from "@/services/knowledgeBases";
 import {
   deleteCustomMcp,
   fetchMcpTools,
@@ -94,6 +102,10 @@ function ToolCard({
 export function ToolsPage() {
   const [builtin, setBuiltin] = useState<BuiltinMcpTool[]>([]);
   const [custom, setCustom] = useState<CustomMcpTool[]>([]);
+  const [kbs, setKbs] = useState<KnowledgeBaseDto[]>([]);
+  const [exportKbId, setExportKbId] = useState("");
+  const [skillPreview, setSkillPreview] = useState<SkillExportJsonDto | null>(null);
+  const [exporting, setExporting] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -105,15 +117,42 @@ export function ToolsPage() {
     setErr(null);
     setLoading(true);
     try {
-      const data = await fetchMcpTools();
+      const [data, kbList] = await Promise.all([fetchMcpTools(), listKnowledgeBases()]);
       setBuiltin(data.builtin);
       setCustom(data.custom);
+      setKbs(kbList);
+      setExportKbId((prev) => prev || kbList[0]?.id || "");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "加载失败");
     } finally {
       setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!exportKbId) {
+      setSkillPreview(null);
+      return;
+    }
+    void fetchSkillJson(exportKbId)
+      .then(setSkillPreview)
+      .catch(() => setSkillPreview(null));
+  }, [exportKbId]);
+
+  const runExport = async (kind: "skill-md" | "skill-json" | "mcp") => {
+    if (!exportKbId) return;
+    setExporting(kind);
+    setErr(null);
+    try {
+      if (kind === "skill-md") await downloadSkillMarkdown(exportKbId);
+      else if (kind === "skill-json") await downloadSkillJson(exportKbId);
+      else await downloadMcpManifest(exportKbId);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "导出失败");
+    } finally {
+      setExporting(null);
+    }
+  };
 
   useEffect(() => {
     void load();
@@ -169,9 +208,8 @@ export function ToolsPage() {
   const exportTemplate = () => {
     const sample = {
       mcpServers: {
-        "example-server": {
-          command: "uv",
-          args: ["run", "path/to/server.py"],
+        "example-remote": {
+          url: "https://example.com/mcp",
         },
       },
     };
@@ -190,8 +228,8 @@ export function ToolsPage() {
         <div>
           <h1 className="text-lg font-semibold text-slate-900 lg:text-xl">工具与集成</h1>
           <p className="mt-1 max-w-2xl text-xs text-slate-600 lg:text-sm">
-            选择要在 KnowMind 中启用的能力；可粘贴或上传 Cursor / Claude 的{" "}
-            <code className="rounded bg-slate-100 px-1">mcp.json</code> 导入外部 MCP。
+            选择要在 KnowMind 中启用的能力；可粘贴带{" "}
+            <code className="rounded bg-slate-100 px-1">url</code> 的远程 MCP 配置（对话页「外部 MCP」开关生效）。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -222,13 +260,15 @@ export function ToolsPage() {
 
       {importOpen ? (
         <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 lg:rounded-xl">
-          <p className="text-xs font-medium text-slate-700">粘贴 mcp.json 内容（含 mcpServers 字段）</p>
+          <p className="text-xs font-medium text-slate-700">
+            粘贴 mcp.json（仅导入含 <code className="rounded bg-slate-200 px-0.5">url</code> 的远程服务；本地 command 配置会跳过）
+          </p>
           <textarea
             value={importText}
             onChange={(e) => setImportText(e.target.value)}
             rows={8}
             className="mt-2 w-full resize-y rounded-xl border border-slate-200 bg-white p-3 font-mono text-xs text-slate-800 outline-none focus:border-primary"
-            placeholder='{"mcpServers": { "my-tool": { "command": "uv", "args": ["run", "..."] } } }'
+            placeholder='{"mcpServers": { "my-remote": { "url": "https://example.com/mcp" } } }'
           />
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <button
@@ -261,7 +301,97 @@ export function ToolsPage() {
         <p className="mt-6 text-sm text-slate-500">加载中…</p>
       ) : (
         <>
-          <h2 className="mt-6 text-sm font-semibold text-slate-800">内置工具</h2>
+          <section className="mt-6 rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/5 to-white p-4 shadow-card lg:rounded-xl lg:p-5">
+            <div className="flex flex-wrap items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-soft text-primary">
+                <BookOpen className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h2 className="text-sm font-semibold text-slate-900">Skill / MCP 导出</h2>
+                <p className="mt-1 text-xs leading-relaxed text-slate-600">
+                  将知识库检索能力导出为 Cursor Skill 或{" "}
+                  <code className="rounded bg-white/80 px-1">mcp.json</code> 片段；MCP 配置内含{" "}
+                  <code className="rounded bg-white/80 px-1">search_kb</code> 工具，需填入 JWT。
+                </p>
+              </div>
+            </div>
+
+            {kbs.length === 0 ? (
+              <p className="mt-4 text-xs text-slate-500">请先创建知识库后再导出。</p>
+            ) : (
+              <>
+                <div className="mt-4 flex flex-wrap items-end gap-3">
+                  <label className="flex min-w-[12rem] flex-1 flex-col gap-1 text-xs text-slate-600">
+                    选择知识库
+                    <select
+                      value={exportKbId}
+                      onChange={(e) => setExportKbId(e.target.value)}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800"
+                    >
+                      {kbs.map((kb) => (
+                        <option key={kb.id} value={kb.id}>
+                          {kb.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={!exportKbId || exporting !== null}
+                      onClick={() => void runExport("skill-md")}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white hover:bg-primary-hover disabled:opacity-50"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      {exporting === "skill-md" ? "导出中…" : "SKILL.md"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!exportKbId || exporting !== null}
+                      onClick={() => void runExport("skill-json")}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      {exporting === "skill-json" ? "导出中…" : "Skill JSON"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!exportKbId || exporting !== null}
+                      onClick={() => void runExport("mcp")}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      {exporting === "mcp" ? "导出中…" : "mcp.json"}
+                    </button>
+                  </div>
+                </div>
+
+                {skillPreview ? (
+                  <div className="mt-4 rounded-xl border border-slate-200/80 bg-white/90 p-3">
+                    <p className="text-[11px] font-medium text-slate-500">预览（JSON）</p>
+                    <pre className="mt-2 max-h-40 overflow-auto font-mono text-[11px] leading-relaxed text-slate-700">
+                      {JSON.stringify(
+                        {
+                          name: skillPreview.name,
+                          kb_id: skillPreview.kb_id,
+                          kb_name: skillPreview.kb_name,
+                          endpoint: skillPreview.endpoint,
+                        },
+                        null,
+                        2,
+                      )}
+                    </pre>
+                    <p className="mt-2 text-[11px] text-slate-500">
+                      MCP 导出后请将 <code className="rounded bg-slate-100 px-1">KNOWMIND_ACCESS_TOKEN</code>{" "}
+                      替换为登录 Token，并将配置合并到 Cursor 的 mcp.json。
+                    </p>
+                  </div>
+                ) : null}
+              </>
+            )}
+          </section>
+
+          <h2 className="mt-8 text-sm font-semibold text-slate-800">内置工具</h2>
           <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:gap-4">
             {builtin.map((t) => (
               <ToolCard
@@ -278,7 +408,7 @@ export function ToolsPage() {
 
           <h2 className="mt-8 text-sm font-semibold text-slate-800">外部导入</h2>
           <p className="mt-1 text-xs text-slate-500">
-            导入的配置会保存在你的账户下，便于统一管理；在 Cursor 中也可复用同一份 mcp.json。
+            仅支持远程 URL 型 MCP；在对话页打开「外部 MCP」后，模型可调用此处已启用服务的工具。
           </p>
           {custom.length === 0 ? (
             <p className="mt-3 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-xs text-slate-500">

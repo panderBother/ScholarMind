@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.orm import KnowledgeBase, KnowledgeCategory, KnowledgeItem, new_uuid
+from app.models.orm import Document, KnowledgeBase, KnowledgeCategory, KnowledgeItem, new_uuid
 from app.services import item_indexing
 from app.services.knowledge_category_service import KnowledgeCategoryError, ensure_default_category
 
@@ -115,7 +115,7 @@ async def create_item(
     await session.refresh(item)
 
     if publish and chunk_id:
-        await asyncio.to_thread(
+        first_id = await asyncio.to_thread(
             item_indexing.index_text_item,
             chunk_id=chunk_id,
             kb_id=kb_id,
@@ -124,6 +124,9 @@ async def create_item(
             text=content,
             lifecycle_status="published",
         )
+        if first_id:
+            item.chunk_id = first_id
+            await session.commit()
     return item
 
 
@@ -166,21 +169,45 @@ async def update_item(
     if source is not None:
         item.source = source
 
+    if content is not None and item.document_id:
+        doc = await session.get(Document, item.document_id)
+        if doc is not None:
+            doc.parsed_content = item.content[:500000]
+            if title is not None:
+                doc.parsed_title = item.title[:512]
+
     await session.commit()
     await session.refresh(item)
 
-    if item.lifecycle_status == "published" and item.chunk_id:
-        await asyncio.to_thread(
-            item_indexing.index_text_item,
-            chunk_id=item.chunk_id,
-            kb_id=kb_id,
-            user_id=user_id,
-            item_id=item.id,
-            text=item.content,
-            lifecycle_status="published",
-            doc_id=item.document_id,
-            page=item.page or 0,
-        )
+    if item.lifecycle_status == "published":
+        if item.source_type == "document" and item.document_id:
+            first_id = await asyncio.to_thread(
+                item_indexing.reindex_document_item,
+                kb_id=kb_id,
+                user_id=user_id,
+                doc_id=item.document_id,
+                item_id=item.id,
+                text=item.content,
+                lifecycle_status="published",
+            )
+            if first_id:
+                item.chunk_id = first_id
+                await session.commit()
+        elif item.chunk_id:
+            first_id = await asyncio.to_thread(
+                item_indexing.index_text_item,
+                chunk_id=item.chunk_id,
+                kb_id=kb_id,
+                user_id=user_id,
+                item_id=item.id,
+                text=item.content,
+                lifecycle_status="published",
+                doc_id=item.document_id,
+                page=item.page or 0,
+            )
+            if first_id and first_id != item.chunk_id:
+                item.chunk_id = first_id
+                await session.commit()
     return item
 
 
@@ -197,17 +224,34 @@ async def publish_item(session: AsyncSession, user_id: str, kb_id: str, item_id:
     item.published_at = datetime.now(UTC)
     await session.commit()
     await session.refresh(item)
-    await asyncio.to_thread(
-        item_indexing.index_text_item,
-        chunk_id=item.chunk_id,
-        kb_id=kb_id,
-        user_id=user_id,
-        item_id=item.id,
-        text=item.content,
-        lifecycle_status="published",
-        doc_id=item.document_id,
-        page=item.page or 0,
-    )
+    if item.source_type == "document" and item.document_id:
+        first_id = await asyncio.to_thread(
+            item_indexing.reindex_document_item,
+            kb_id=kb_id,
+            user_id=user_id,
+            doc_id=item.document_id,
+            item_id=item.id,
+            text=item.content,
+            lifecycle_status="published",
+        )
+        if first_id:
+            item.chunk_id = first_id
+            await session.commit()
+    else:
+        first_id = await asyncio.to_thread(
+            item_indexing.index_text_item,
+            chunk_id=item.chunk_id,
+            kb_id=kb_id,
+            user_id=user_id,
+            item_id=item.id,
+            text=item.content,
+            lifecycle_status="published",
+            doc_id=item.document_id,
+            page=item.page or 0,
+        )
+        if first_id:
+            item.chunk_id = first_id
+            await session.commit()
     return item
 
 
@@ -215,7 +259,9 @@ async def archive_item(session: AsyncSession, user_id: str, kb_id: str, item_id:
     item = await get_item(session, user_id, kb_id, item_id)
     item.lifecycle_status = "archived"
     await session.commit()
-    if item.chunk_id:
+    if item.document_id:
+        await asyncio.to_thread(item_indexing.remove_index_for_document, item.document_id)
+    elif item.chunk_id:
         await asyncio.to_thread(item_indexing.remove_index_chunk, item.chunk_id)
     await session.refresh(item)
     return item
@@ -223,6 +269,12 @@ async def archive_item(session: AsyncSession, user_id: str, kb_id: str, item_id:
 
 async def delete_item(session: AsyncSession, user_id: str, kb_id: str, item_id: str) -> None:
     item = await get_item(session, user_id, kb_id, item_id)
+    if item.document_id:
+        from app.services.document_service import delete_document
+
+        await delete_document(session, user_id, kb_id, item.document_id)
+        return
+
     chunk_id = item.chunk_id
     await session.delete(item)
     await session.commit()

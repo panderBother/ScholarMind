@@ -1,24 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  BarChart3,
   CheckCircle2,
   ChevronDown,
   FileText,
   Filter,
   Trash2,
-  UploadCloud,
   XCircle,
 } from "lucide-react";
 
 import { KnowledgeItemsPanel } from "@/components/KnowledgeItemsPanel";
+import { KnowledgeProductionActions } from "@/components/KnowledgeProductionActions";
+import { DocumentImportPreviewModal } from "@/components/DocumentImportPreviewModal";
+import { DocumentParseProgressBar } from "@/components/DocumentParseProgressBar";
 import { DocumentPreviewDrawer } from "@/components/DocumentPreviewDrawer";
+import { DocumentUploadZone } from "@/components/DocumentUploadZone";
 import { useUi } from "@/components/ui/UiProvider";
 import { getAccessToken } from "@/services/auth";
 import {
   deleteDocument,
+  filterSupportedFiles,
+  getDocument,
   listDocuments,
   retryDocumentParse,
-  uploadDocuments,
+  SUPPORTED_UPLOAD_ACCEPT,
+  uploadDocumentsWithProgress,
   type DocumentDto,
 } from "@/services/documents";
 import { listKnowledgeBases, type KnowledgeBaseDto } from "@/services/knowledgeBases";
@@ -26,13 +33,14 @@ import { listKnowledgeBases, type KnowledgeBaseDto } from "@/services/knowledgeB
 const VIEW_TABS = ["文档视图", "条目视图"] as const;
 
 /** 与移动原型一致的筛选 Tab */
-const TABS_MOBILE = ["全部", "解析中", "已完成", "失败"] as const;
-const TABS_DESKTOP = ["全部", "处理中", "待处理", "已完成", "失败"] as const;
+const TABS_MOBILE = ["全部", "解析中", "待预览", "已完成", "失败"] as const;
+const TABS_DESKTOP = ["全部", "处理中", "待处理", "待预览", "已完成", "失败"] as const;
 
-function mapApiStatus(s: string): "Completed" | "Processing" | "Failed" | "Pending" {
+function mapApiStatus(s: string): "Completed" | "Processing" | "Failed" | "Pending" | "Preview" {
   if (s === "done") return "Completed";
   if (s === "processing") return "Processing";
   if (s === "failed") return "Failed";
+  if (s === "preview") return "Preview";
   return "Pending";
 }
 
@@ -52,7 +60,10 @@ export function DocumentsPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [previewDoc, setPreviewDoc] = useState<DocumentDto | null>(null);
+  const [previewPage, setPreviewPage] = useState<number | null>(null);
+  const [importPreviewDoc, setImportPreviewDoc] = useState<DocumentDto | null>(null);
   const [itemDocFilter, setItemDocFilter] = useState<{ id: string; name: string } | null>(null);
 
   const loadKbs = useCallback(async () => {
@@ -107,6 +118,31 @@ export function DocumentsPage() {
   }, [location.state]);
 
   useEffect(() => {
+    const sp = new URLSearchParams(location.search);
+    const qKbId = sp.get("kbId");
+    const docId = sp.get("docId");
+    if (!qKbId || !docId) return;
+    const pageStr = sp.get("page");
+    const page = pageStr != null ? Number.parseInt(pageStr, 10) : null;
+    if (qKbId) setKbId(qKbId);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const doc = await getDocument(qKbId, docId);
+        if (cancelled) return;
+        setPreviewDoc(doc);
+        setPreviewPage(Number.isFinite(page) ? page : null);
+        nav("/documents", { replace: true });
+      } catch {
+        /* 无效 docId 时忽略 */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [location.search, nav]);
+
+  useEffect(() => {
     void loadDocs();
   }, [loadDocs]);
 
@@ -118,7 +154,7 @@ export function DocumentsPage() {
   /** 有待处理/解析中文档时定时拉状态（Worker 跑完后界面会自动变为已完成） */
   useEffect(() => {
     if (!kbId || !hasQueuedDocs) return;
-    const t = window.setInterval(() => void loadDocs({ silent: true }), 3000);
+    const t = window.setInterval(() => void loadDocs({ silent: true }), 2000);
     return () => window.clearInterval(t);
   }, [kbId, hasQueuedDocs, loadDocs]);
 
@@ -131,6 +167,7 @@ export function DocumentsPage() {
     const map: Record<string, string> = {
       处理中: "processing",
       待处理: "pending",
+      待预览: "preview",
       已完成: "done",
       失败: "failed",
     };
@@ -149,42 +186,59 @@ export function DocumentsPage() {
     }
   };
 
-  const onPickFiles = async (files: FileList | null) => {
-    if (!kbId || !files?.length) return;
+  const uploadFiles = async (files: File[]) => {
+    if (!kbId || !files.length) return;
     setUploading(true);
+    setUploadProgress(0);
     setErr(null);
     try {
-      const arr = Array.from(files).filter((f) => f.name.toLowerCase().endsWith(".pdf"));
-      if (!arr.length) {
-        setErr("请选择 PDF 文件");
-        return;
-      }
-      await uploadDocuments(kbId, arr);
+      const result = await uploadDocumentsWithProgress(kbId, files, setUploadProgress);
       await loadDocs();
+      const previewId = result.needs_preview[0];
+      if (previewId) {
+        const doc = result.documents.find((d) => d.id === previewId);
+        if (doc) setImportPreviewDoc(doc);
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : "上传失败");
     } finally {
       setUploading(false);
+      setUploadProgress(0);
       if (fileRef.current) fileRef.current.value = "";
     }
   };
 
+  const onPickFiles = async (files: FileList | null) => {
+    if (!files?.length) return;
+    const arr = filterSupportedFiles(files);
+    if (!arr.length) {
+      setErr("请选择支持的文件格式（PDF、DOCX、Excel、CSV、Markdown、TXT、图片等）");
+      return;
+    }
+    await uploadFiles(arr);
+  };
+
   const onEditDocumentItems = (doc: DocumentDto) => {
     setPreviewDoc(null);
+    setPreviewPage(null);
     setItemDocFilter({ id: doc.id, name: doc.filename });
     setViewTab("条目视图");
   };
 
   const openPreview = (doc: DocumentDto) => {
+    if (doc.status === "preview") {
+      setImportPreviewDoc(doc);
+      return;
+    }
     setPreviewDoc(doc);
   };
 
   const onDeleteDocument = async (doc: DocumentDto) => {
     if (!kbId) return;
     const itemHint =
-      doc.status === "done" && doc.chunk_count > 0
-        ? `将同时删除 ${doc.chunk_count} 条解析条目及其检索索引。`
-        : "若已有解析条目，也会一并删除。";
+      doc.status === "done"
+        ? "将同时删除对应知识条目与检索索引。"
+        : "若已有知识条目，也会一并删除。";
     const ok = await confirm({
       title: "删除文档",
       message: `确定删除「${doc.filename}」？${itemHint}此操作不可恢复。`,
@@ -208,20 +262,32 @@ export function DocumentsPage() {
 
   return (
     <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 lg:space-y-6 lg:p-8">
-      <div className="flex items-start justify-between gap-3 lg:block">
+      <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-slate-900 lg:text-xl">文档管理</h1>
           <p className="mt-0.5 text-xs text-slate-500 lg:text-sm">
-            PDF 单文件最大 50MB · 单次最多 20 个 · 解析异步（Celery）
+            文档视图查看原文件 · 条目视图编辑识别内容（一文档一条目）· 检索用语义切分
           </p>
         </div>
-        <button
-          type="button"
-          className="rounded-full border border-slate-200 bg-white p-2 text-slate-500 shadow-sm lg:hidden"
-          aria-label="筛选"
-        >
-          <Filter className="h-5 w-5" />
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {kbId ? (
+            <button
+              type="button"
+              onClick={() => nav(`/knowledge-bases/${kbId}/analytics`)}
+              className="hidden items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:border-primary/40 hover:text-primary lg:inline-flex"
+            >
+              <BarChart3 className="h-3.5 w-3.5" />
+              使用热度
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="rounded-full border border-slate-200 bg-white p-2 text-slate-500 shadow-sm lg:hidden"
+            aria-label="筛选"
+          >
+            <Filter className="h-5 w-5" />
+          </button>
+        </div>
       </div>
 
       {err ? (
@@ -229,6 +295,8 @@ export function DocumentsPage() {
           {err}
         </p>
       ) : null}
+
+      {kbId ? <KnowledgeProductionActions kbId={kbId} className="mb-2" /> : null}
 
       <div className="flex gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
         {VIEW_TABS.map((t) => (
@@ -272,7 +340,7 @@ export function DocumentsPage() {
             <code className="rounded bg-white/80 px-1">.env</code> 设置{" "}
             <code className="rounded bg-white/80 px-1">INGEST_BACKGROUND_THREAD=true</code> 免 Worker（后台线程解析）。
             若状态卡在「解析中」很久，可看 API 终端日志是否卡在首次下载嵌入模型；也可点「重新解析」重排队列。
-            本页每 3 秒自动刷新。
+            本页每 2 秒自动刷新解析进度。
           </p>
         </div>
       ) : null}
@@ -321,38 +389,27 @@ export function DocumentsPage() {
           <input
             ref={fileRef}
             type="file"
-            accept="application/pdf,.pdf"
+            accept={SUPPORTED_UPLOAD_ACCEPT}
             multiple
             className="hidden"
             onChange={(e) => void onPickFiles(e.target.files)}
           />
 
-          <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-white p-6 text-center lg:rounded-xl lg:p-10">
-            <UploadCloud className="mx-auto mb-2 h-9 w-9 text-primary lg:h-10 lg:w-10" />
-            <p className="text-sm text-slate-600">选择 PDF 上传至「{kbName}」</p>
-            <p className="mt-1 text-xs text-slate-400">需先选择知识库</p>
-            <button
-              type="button"
-              disabled={!kbId || uploading}
-              onClick={() => fileRef.current?.click()}
-              className="mt-3 w-full max-w-xs rounded-xl bg-primary py-2.5 text-sm font-semibold text-white hover:bg-primary-hover disabled:opacity-50 lg:mt-4 lg:w-auto lg:px-6"
-            >
-              {uploading ? "上传中…" : "选择 PDF"}
-            </button>
-          </div>
+          <DocumentUploadZone
+            kbName={kbName}
+            disabled={!kbId}
+            uploading={uploading}
+            uploadProgress={uploadProgress}
+            onBrowseClick={() => fileRef.current?.click()}
+            onSelectFiles={uploadFiles}
+          />
         </div>
 
         <aside className="hidden rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-600 shadow-card lg:block">
           <h2 className="text-sm font-semibold text-slate-900">说明</h2>
           <p className="mt-2 leading-relaxed">
-            上传后 API 把解析任务发到 <strong>Redis</strong>，须另有终端运行{" "}
-            <strong>Celery Worker</strong> 才会把「待处理」变成「已完成」。Worker 与 uvicorn 须共用同一{" "}
-            <code className="rounded bg-slate-100 px-1">.env</code>（含 <code className="rounded bg-slate-100 px-1">
-              DATABASE_URL
-            </code>、<code className="rounded bg-slate-100 px-1">REDIS_URL</code>、<code className="rounded bg-slate-100 px-1">
-              CELERY_TASK_ALWAYS_EAGER=false
-            </code>
-            ）。
+            所有格式上传后先<strong>预览确认</strong>，再异步入库。确认后 API 把解析任务发到{" "}
+            <strong>Redis</strong>，须另有终端运行 <strong>Celery Worker</strong>。列表会显示各阶段解析进度。
           </p>
         </aside>
       </section>
@@ -398,11 +455,7 @@ export function DocumentsPage() {
                       {mb} MB · {title.slice(0, 40)}
                       {title.length > 40 ? "…" : ""}
                     </div>
-                    {st === "Processing" && (
-                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
-                        <div className="h-full w-1/2 rounded-full bg-amber-400" />
-                      </div>
-                    )}
+                    <DocumentParseProgressBar doc={row} className="mt-2" />
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <StatusBadge status={st} />
                     </div>
@@ -427,13 +480,25 @@ export function DocumentsPage() {
                         重新解析
                       </button>
                     )}
+                    {row.status === "preview" ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setImportPreviewDoc(row);
+                        }}
+                        className="text-xs font-semibold text-primary hover:underline"
+                      >
+                        预览确认
+                      </button>
+                    ) : null}
                     {row.status === "done" ? (
                       <button
                         type="button"
                         onClick={() => onEditDocumentItems(row)}
                         className="text-xs font-semibold text-primary hover:underline"
                       >
-                        编辑条目
+                        编辑内容
                       </button>
                     ) : null}
                     <button
@@ -461,7 +526,7 @@ export function DocumentsPage() {
                 <th className="px-4 py-3">文件名</th>
                 <th className="px-4 py-3">标题</th>
                 <th className="px-4 py-3">大小</th>
-                <th className="px-4 py-3">块数</th>
+                <th className="px-4 py-3">检索段</th>
                 <th className="px-4 py-3">状态</th>
               </tr>
             </thead>
@@ -487,7 +552,8 @@ export function DocumentsPage() {
                       <td className="px-4 py-3 text-slate-600">{mb} MB</td>
                       <td className="px-4 py-3 text-slate-600">{row.chunk_count}</td>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex flex-col gap-1.5">
+                          <div className="flex flex-wrap items-center gap-2">
                           <StatusBadge status={st} />
                           {(row.status === "pending" ||
                             row.status === "processing" ||
@@ -500,13 +566,22 @@ export function DocumentsPage() {
                               重新解析
                             </button>
                           )}
+                          {row.status === "preview" ? (
+                            <button
+                              type="button"
+                              onClick={() => setImportPreviewDoc(row)}
+                              className="text-xs font-semibold text-primary hover:underline"
+                            >
+                              预览确认
+                            </button>
+                          ) : null}
                           {row.status === "done" ? (
                             <button
                               type="button"
                               onClick={() => onEditDocumentItems(row)}
                               className="text-xs font-semibold text-primary hover:underline"
                             >
-                              编辑条目
+                              编辑内容
                             </button>
                           ) : null}
                           <button
@@ -518,6 +593,8 @@ export function DocumentsPage() {
                             删除
                           </button>
                         </div>
+                        <DocumentParseProgressBar doc={row} />
+                      </div>
                       </td>
                     </tr>
                   );
@@ -534,11 +611,27 @@ export function DocumentsPage() {
         </>
       )}
 
+      {importPreviewDoc && kbId ? (
+        <DocumentImportPreviewModal
+          kbId={kbId}
+          doc={importPreviewDoc}
+          onClose={() => setImportPreviewDoc(null)}
+          onConfirmed={() => {
+            setImportPreviewDoc(null);
+            void loadDocs();
+          }}
+        />
+      ) : null}
+
       {previewDoc && kbId ? (
         <DocumentPreviewDrawer
           kbId={kbId}
           doc={previewDoc}
-          onClose={() => setPreviewDoc(null)}
+          initialPage={previewPage}
+          onClose={() => {
+            setPreviewDoc(null);
+            setPreviewPage(null);
+          }}
           onEditItems={onEditDocumentItems}
           onDelete={(doc) => void onDeleteDocument(doc)}
         />
@@ -571,12 +664,18 @@ function TabBtn({
   );
 }
 
-function StatusBadge({ status }: { status: "Completed" | "Processing" | "Failed" | "Pending" }) {
+function StatusBadge({
+  status,
+}: {
+  status: "Completed" | "Processing" | "Failed" | "Pending" | "Preview";
+}) {
   const cls =
     status === "Completed"
       ? "bg-emerald-50 text-emerald-700"
       : status === "Processing"
         ? "bg-amber-50 text-amber-700"
+        : status === "Preview"
+          ? "bg-sky-50 text-sky-700"
         : status === "Failed"
           ? "bg-red-50 text-red-700"
           : "bg-slate-100 text-slate-600";
@@ -585,6 +684,8 @@ function StatusBadge({ status }: { status: "Completed" | "Processing" | "Failed"
       ? "已完成"
       : status === "Processing"
         ? "解析中"
+        : status === "Preview"
+          ? "待预览"
         : status === "Failed"
           ? "失败"
           : "排队中";

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { BookOpen, FolderTree, Link2, Plus, Sparkles, Trash2 } from "lucide-react";
+import { BookOpen, ExternalLink, FolderTree, Link2, Plus, Sparkles, Trash2 } from "lucide-react";
 
 import { MarkdownPreview } from "@/components/MarkdownPreview";
 import { UrlImportModal } from "@/components/UrlImportModal";
+import { KnowledgeGapsPanel } from "@/components/KnowledgeGapsPanel";
 import { ActionIcons } from "@/components/ui/ActionIcons";
 import { useUi } from "@/components/ui/UiProvider";
 import {
@@ -13,6 +14,7 @@ import {
   listCategoryTree,
   type CategoryTreeNode,
 } from "@/services/categories";
+import { getDocument } from "@/services/documents";
 import {
   archiveKnowledgeItem,
   createKnowledgeItem,
@@ -24,20 +26,18 @@ import {
 } from "@/services/knowledgeItems";
 import { searchKnowledgeBase, type SearchHitDto } from "@/services/search";
 import {
-  analyzeKnowledgeGaps,
-  generateGapDrafts,
-  listKnowledgeGaps,
-  type KnowledgeGapDto,
-} from "@/services/distill";
-import { isKnowledgeItemContentReadonly, SOURCE_LABEL } from "@/utils/knowledgeItemUtils";
+  buildKnowledgeItemDeleteConfirm,
+  isKnowledgeItemContentReadonly,
+  SOURCE_LABEL,
+} from "@/utils/knowledgeItemUtils";
 
-const STATUS_TABS = ["全部", "已发布", "草稿", "已归档"] as const;
+const STATUS_TABS = ["全部", "已发布", "草稿", "已下架"] as const;
 
 const STATUS_MAP: Record<string, string | undefined> = {
   全部: undefined,
   已发布: "published",
   草稿: "draft",
-  已归档: "archived",
+  已下架: "archived",
 };
 
 type Props = {
@@ -130,25 +130,24 @@ export function KnowledgeItemsPanel({ kbId, documentId, documentName, onClearDoc
       await archiveKnowledgeItem(kbId, item.id);
       await loadItems();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "归档失败");
+      setErr(e instanceof Error ? e.message : "下架失败");
     }
   };
 
   const onDelete = async (item: KnowledgeItemDto) => {
-    if (item.source_type === "document") {
-      setErr("文档解析条目请通过删除文档移除");
-      return;
+    let documentLabel: string | null = null;
+    if (item.document_id) {
+      try {
+        const doc = await getDocument(kbId, item.document_id);
+        documentLabel = doc.title || doc.filename;
+      } catch {
+        documentLabel = null;
+      }
     }
-    if (
-      item.source_type !== "manual" &&
-      item.source_type !== "ai_extract" &&
-      item.source_type !== "distill"
-    ) {
-      return;
-    }
+    const { title, message } = buildKnowledgeItemDeleteConfirm(item, documentLabel);
     const ok = await confirm({
-      title: "删除条目",
-      message: `确定删除「${item.title}」？`,
+      title,
+      message,
       confirmText: "删除",
       type: "danger",
     });
@@ -172,7 +171,7 @@ export function KnowledgeItemsPanel({ kbId, documentId, documentName, onClearDoc
       {documentId ? (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/20 bg-primary-soft px-3 py-2 text-sm">
           <span className="text-slate-700">
-            正在查看文档「<strong>{documentName ?? "未知"}</strong>」的解析条目
+            正在编辑文档「<strong>{documentName ?? "未知"}</strong>」的识别内容（一文档一条目）
           </span>
           {onClearDocumentFilter ? (
             <button
@@ -225,6 +224,15 @@ export function KnowledgeItemsPanel({ kbId, documentId, documentName, onClearDoc
         >
           <Sparkles className="h-4 w-4" />
           知识缺口
+        </button>
+        <button
+          type="button"
+          onClick={() => nav(`/production?kb_id=${encodeURIComponent(kbId)}`)}
+          disabled={!kbId}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600 hover:bg-slate-50"
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+          知识生产工作台
         </button>
       </div>
 
@@ -281,8 +289,8 @@ export function KnowledgeItemsPanel({ kbId, documentId, documentName, onClearDoc
         ) : !isHybridSearch && items.length === 0 ? (
           <p className="p-6 text-center text-sm text-slate-500">
             {documentId
-              ? "该文档暂无解析条目，或尚未解析完成。"
-              : "暂无条目。上传 PDF 后会自动生成「已发布」条目，或点击「新建条目」手动录入。"}
+              ? "该文档尚无对应条目，或尚未解析完成。"
+              : "暂无条目。文档入库后会自动生成一条「已发布」条目；也可手动新建。"}
           </p>
         ) : isHybridSearch ? (
           <ul className="divide-y divide-slate-100">
@@ -346,13 +354,7 @@ export function KnowledgeItemsPanel({ kbId, documentId, documentName, onClearDoc
                         ? () => void onArchive(item)
                         : undefined
                     }
-                    onDelete={
-                      item.source_type === "manual" ||
-                      item.source_type === "ai_extract" ||
-                      item.source_type === "distill"
-                        ? () => void onDelete(item)
-                        : undefined
-                    }
+                    onDelete={() => void onDelete(item)}
                   />
                 </div>
               </li>
@@ -410,6 +412,7 @@ export function KnowledgeItemsPanel({ kbId, documentId, documentName, onClearDoc
       {showGaps ? (
         <KnowledgeGapsPanel
           kbId={kbId}
+          variant="modal"
           onClose={() => setShowGaps(false)}
           onChanged={() => void loadItems()}
         />
@@ -422,13 +425,13 @@ function StatusPill({ status }: { status: string }) {
   const map: Record<string, string> = {
     published: "bg-emerald-50 text-emerald-700",
     draft: "bg-amber-50 text-amber-700",
-    archived: "bg-slate-100 text-slate-600",
+    archived: "bg-red-50 text-red-700",
     disabled: "bg-red-50 text-red-700",
   };
   const label: Record<string, string> = {
     published: "已发布",
     draft: "草稿",
-    archived: "已归档",
+    archived: "已下架",
     disabled: "已下架",
   };
   return (
@@ -499,7 +502,7 @@ function ItemEditorModal({
       <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
         <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
           <h2 className="font-semibold text-slate-900">
-            {item ? (item.source_type === "document" ? "编辑文档解析块" : "编辑条目") : "新建知识条目"}
+            {item ? (item.source_type === "document" ? "编辑文档识别内容" : "编辑条目") : "新建知识条目"}
           </h2>
           <button type="button" onClick={onClose} className="text-sm text-slate-500 hover:text-slate-800">
             关闭
@@ -666,130 +669,6 @@ function CategoryDrawer({
               )}
             </li>
           ))}
-        </ul>
-      </div>
-    </div>
-  );
-}
-
-const RULE_LABEL: Record<string, string> = {
-  high_miss: "高频低命中",
-  user_correction: "用户纠错",
-};
-
-function KnowledgeGapsPanel({
-  kbId,
-  onClose,
-  onChanged,
-}: {
-  kbId: string;
-  onClose: () => void;
-  onChanged: () => void;
-}) {
-  const [gaps, setGaps] = useState<KnowledgeGapDto[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const rows = await listKnowledgeGaps(kbId);
-      setGaps(rows);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "加载失败");
-    } finally {
-      setLoading(false);
-    }
-  }, [kbId]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const onAnalyze = async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const rows = await analyzeKnowledgeGaps(kbId);
-      setGaps(rows);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "分析失败");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const onGenerate = async (gapId: string) => {
-    try {
-      await generateGapDrafts(kbId, gapId);
-      await load();
-      onChanged();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "生成草稿失败");
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 lg:items-center">
-      <div className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b px-4 py-3">
-          <div>
-            <h2 className="font-semibold text-slate-900">知识缺口（自动蒸馏）</h2>
-            <p className="text-xs text-slate-500">基于对话检索日志与用户纠错识别</p>
-          </div>
-          <button type="button" onClick={onClose} className="text-sm text-slate-500">
-            关闭
-          </button>
-        </div>
-        {err ? <p className="bg-red-50 px-4 py-2 text-sm text-red-700">{err}</p> : null}
-        <div className="flex gap-2 border-b px-4 py-2">
-          <button
-            type="button"
-            onClick={() => void onAnalyze()}
-            disabled={loading}
-            className="rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
-          >
-            立即分析
-          </button>
-          <button type="button" onClick={() => void load()} className="rounded-lg border px-3 py-1.5 text-sm">
-            刷新
-          </button>
-        </div>
-        <ul className="flex-1 overflow-y-auto divide-y p-2">
-          {loading && gaps.length === 0 ? (
-            <li className="p-4 text-sm text-slate-500">加载中…</li>
-          ) : gaps.length === 0 ? (
-            <li className="p-6 text-center text-sm text-slate-500">
-              暂无缺口。先在对话页对知识库提问（尤其库内没有的话题），再点「立即分析」。
-            </li>
-          ) : (
-            gaps.map((g) => (
-              <li key={g.id} className="space-y-2 p-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-800">
-                    {RULE_LABEL[g.trigger_rule] ?? g.trigger_rule}
-                  </span>
-                  {g.avg_score != null ? (
-                    <span className="text-xs text-slate-500">平均命中 {g.avg_score.toFixed(2)}</span>
-                  ) : null}
-                  <span className="text-xs text-slate-400">×{g.hit_count}</span>
-                </div>
-                <ul className="list-inside list-disc text-xs text-slate-600">
-                  {(g.sample_queries || []).slice(0, 3).map((q) => (
-                    <li key={q}>{q}</li>
-                  ))}
-                </ul>
-                <button
-                  type="button"
-                  onClick={() => void onGenerate(g.id)}
-                  className="text-xs font-semibold text-primary hover:underline"
-                >
-                  生成草稿条目
-                </button>
-              </li>
-            ))
-          )}
         </ul>
       </div>
     </div>

@@ -43,6 +43,13 @@ class Settings(BaseSettings):
 
     max_knowledge_bases_per_user: int = 10
 
+    # Skill/MCP 导出：对外展示的 API 基址（如 https://your-host/api/v1）；未设则从请求推断
+    public_api_base_url: str | None = None
+    knowmind_mcp_root: str | None = None
+
+    # RAG 评估看板：knowmind-eval/reports 目录；未设则相对仓库根目录自动解析
+    eval_reports_dir: str | None = None
+
     # 向量：Windows 无 Milvus Lite wheel；默认 Chroma 持久化。远程 Milvus 示例：http://127.0.0.1:19530
     milvus_uri: str | None = None
     chroma_data_path: str = "data/chroma"
@@ -113,6 +120,11 @@ class Settings(BaseSettings):
     edgefn_api_base_url: str = "https://api.edgefn.net/v1"
     edgefn_chat_model: str = "DeepSeek-R1-0528-Qwen3-8B"
 
+    # 硅基流动：文档/图片 OCR（DeepSeek-OCR），与 EdgeFN 对话独立
+    siliconflow_api_key: str | None = Field(default=None, description="Bearer Token，勿提交仓库")
+    siliconflow_api_base_url: str = "https://api.siliconflow.cn/v1"
+    siliconflow_vision_model: str = "deepseek-ai/DeepSeek-OCR"
+
     # 对话中本地文件读写；白名单见 FILE_WRITER_ALLOWED_ROOTS
     file_tools_enabled: bool = True
     # prompt：模型输出 XML 工具块（兼容 EdgeFN / 未开 native tools 的网关）；native：OpenAI tools API
@@ -124,6 +136,12 @@ class Settings(BaseSettings):
     web_search_enabled: bool = True
     brave_search_api_key: str | None = None
     web_search_max_results: int = 5
+
+    # 对话中调用用户已导入且启用的远程 URL 型 MCP（需 EdgeFN 支持 tools API）
+    external_mcp_enabled: bool = True
+    external_mcp_max_rounds: int = 4
+    external_mcp_connect_timeout: float = 15.0
+    external_mcp_read_timeout: float = 120.0
 
     # false（方案 B）：Redis + Celery Worker 异步解析。true 时仅用内存 broker、无 Redis 也可开发。
     celery_task_always_eager: bool = False

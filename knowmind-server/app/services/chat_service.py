@@ -1,7 +1,8 @@
 import asyncio
 import json
+import re
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
@@ -55,6 +56,89 @@ def _sse_event(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _agent_step_sse(
+    step: str,
+    *,
+    status: str = "done",
+    detail: str = "",
+    meta: dict | None = None,
+) -> dict:
+    payload: dict = {"type": "agent_step", "step": step, "status": status}
+    if detail:
+        payload["detail"] = detail
+    if meta:
+        payload["meta"] = meta
+    return payload
+
+
+async def _sse_rag_sources(
+    session: AsyncSession | None,
+    kb_id: str | None,
+    hits: list,
+) -> dict | None:
+    if not kb_id or not hits:
+        return None
+    from app.services.rag_citations import build_rag_sources_payload
+
+    sources = await build_rag_sources_payload(session, hits)
+    if not sources:
+        return None
+    return {"type": "rag_sources", "kb_id": kb_id, "sources": sources}
+
+
+def _rag_step_done(hits: list, *, kb_markdown: str = "") -> dict:
+    scores = [h.score for h in hits] if hits else []
+    avg = sum(scores) / len(scores) if scores else 0.0
+    hit_count = len(hits)
+    if hit_count == 0 and kb_markdown and "### 摘录" in kb_markdown:
+        hit_count = len(re.findall(r"^### 摘录", kb_markdown, flags=re.MULTILINE))
+        if hit_count > 0:
+            scores = [0.0]
+            avg = 0.0
+    if hit_count > 0:
+        detail = f"命中 {hit_count} 条片段，平均相关度 {avg:.0%}"
+    else:
+        detail = "未命中相关内容"
+    return _agent_step_sse(
+        "rag_retrieval",
+        status="done",
+        detail=detail,
+        meta={"hit_count": hit_count, "avg_score": round(avg, 3)},
+    )
+
+
+async def _yield_prefetch_agent_steps(
+    *,
+    req: ChatRequest,
+    user_id: str | None,
+    rag_task: asyncio.Task[tuple[str, list]] | None,
+    web_task: asyncio.Task[str] | None,
+    await_prefetch: Callable[[], Awaitable[tuple[str, bool]]],
+    rag_hits: list,
+) -> AsyncIterator[str | tuple[str, bool]]:
+    if rag_task is not None:
+        yield _sse_event(_agent_step_sse("rag_retrieval", status="running", detail="Hybrid RAG 检索中…"))
+    if web_task is not None:
+        yield _sse_event(_agent_step_sse("web_search", status="running", detail="联网搜索中…"))
+    merged_kb, web_injected = await await_prefetch()
+    if rag_task is not None:
+        yield _sse_event(_rag_step_done(rag_hits, kb_markdown=merged_kb))
+    elif req.knowledge_base_id:
+        yield _sse_event(_agent_step_sse("rag_retrieval", status="skipped", detail="未绑定知识库或未登录"))
+    if web_task is not None:
+        yield _sse_event(
+            _agent_step_sse(
+                "web_search",
+                status="done",
+                detail="已注入联网结果" if web_injected else "无可用联网结果",
+                meta={"injected": web_injected},
+            ),
+        )
+    elif _want_web_search(req, user_id):
+        yield _sse_event(_agent_step_sse("web_search", status="skipped", detail="联网搜索未返回结果"))
+    yield (merged_kb, web_injected)
+
+
 def _want_file_tools(req: ChatRequest, user_id: str | None = None) -> bool:
     """仅当用户消息含读写文件意图时才走 file_tools 编排（非流式）；普通问答直连 LLM 流式。"""
     if not settings.file_tools_enabled or not req.file_tools:
@@ -77,6 +161,33 @@ def _want_web_search(req: ChatRequest, user_id: str | None = None) -> bool:
         if not mcp_registry.is_builtin_enabled(user_id, "web_search"):
             return False
     return True
+
+
+def _want_external_mcp(req: ChatRequest, user_id: str | None = None) -> bool:
+    if not settings.external_mcp_enabled or not req.external_mcp:
+        return False
+    if not user_id:
+        return False
+    from app.services.mcp_url_client import list_enabled_url_bindings
+
+    return len(list_enabled_url_bindings(user_id)) > 0
+
+
+def _external_mcp_noop_hint() -> str:
+    return (
+        "未调用外部 MCP：请先在「工具与集成」导入带 url 的 MCP 并开启开关，"
+        "或在对话页打开「外部 MCP」。"
+    )
+
+
+def _mcp_tool_trace_sse(entry) -> dict:
+    return {
+        "type": "tool_result",
+        "tool": entry.qualified_name,
+        "ok": entry.ok,
+        "result": entry.result,
+        "meta": {"server": entry.server_name, "mcp_tool": entry.tool_name},
+    }
 
 
 async def _merge_web_search_context(
@@ -208,6 +319,42 @@ def _file_tools_noop_hint(req: ChatRequest) -> str:
     return "未执行文件操作"
 
 
+async def _stream_external_mcp_turn(
+    messages: list,
+    *,
+    user_id: str,
+) -> tuple[str, str, list, list[str], int]:
+    from app.services.chat_external_mcp import (
+        McpToolTraceEntry,
+        complete_chat_with_external_mcp,
+        discover_external_mcp_tools,
+    )
+
+    discovery = await discover_external_mcp_tools(user_id)
+    traces: list[McpToolTraceEntry] = []
+
+    async def on_tool(entry: McpToolTraceEntry) -> None:
+        traces.append(entry)
+
+    result = await complete_chat_with_external_mcp(
+        messages,
+        user_id=user_id,
+        tool_bindings=discovery.tools,
+        on_tool=on_tool,
+    )
+    return (
+        result.reasoning,
+        result.content,
+        traces,
+        discovery.discovery_errors,
+        len(discovery.tools),
+    )
+
+
+def _yield_mcp_traces(traces: list) -> list[dict]:
+    return [_mcp_tool_trace_sse(t) for t in traces if t.ok]
+
+
 async def _stream_file_tools_turn(
     req: ChatRequest,
     messages: list,
@@ -306,6 +453,7 @@ async def iter_chat_stream(
     kb_context: str = "",
     session: AsyncSession | None = None,
     user_id: str | None = None,
+    expert_prompt: str | None = None,
 ) -> AsyncIterator[str]:
     """
     SSE：`trace_id` → `conversation_id`（多轮）→ 可选 `thinking_delta` / `delta` → `done`。
@@ -339,12 +487,38 @@ async def iter_chat_stream(
         nonlocal rag_hits
         kb_from_rag = (kb_context or "").strip()
         if rag_task is not None:
-            kb_from_rag, rag_hits = await rag_task
+            kb_from_rag, new_hits = await rag_task
+            rag_hits.clear()
+            rag_hits.extend(new_hits)
         web_md = await web_task if web_task is not None else ""
         return _merge_kb_and_web(kb_from_rag, web_md)
 
+    async def _stream_prefetch():
+        merged: tuple[str, bool] = ("", False)
+        async for prefetch_item in _yield_prefetch_agent_steps(
+            req=req,
+            user_id=user_id,
+            rag_task=rag_task,
+            web_task=web_task,
+            await_prefetch=_await_prefetch,
+            rag_hits=rag_hits,
+        ):
+            if isinstance(prefetch_item, tuple):
+                merged = prefetch_item
+            else:
+                yield prefetch_item
+        yield merged
+
     if not use_memory:
-        merged_kb, web_injected = await _await_prefetch()
+        merged_kb, web_injected = "", False
+        async for prefetch_out in _stream_prefetch():
+            if isinstance(prefetch_out, tuple):
+                merged_kb, web_injected = prefetch_out
+            else:
+                yield prefetch_out
+        rag_sources_ev = await _sse_rag_sources(session, req.knowledge_base_id, rag_hits)
+        if rag_sources_ev is not None:
+            yield _sse_event(rag_sources_ev)
         web_hint = _want_web_search(req, user_id) and not web_injected
         messages = build_chat_messages(
             req.message,
@@ -352,23 +526,72 @@ async def iter_chat_stream(
             web_search=web_hint,
             kb_context=merged_kb or None,
             file_tools=_want_file_tools(req, user_id),
+            expert_prompt=expert_prompt,
         )
         try:
             if _want_file_tools(req, user_id):
+                yield _sse_event(_agent_step_sse("file_tools", status="running", detail="文件读写编排中…"))
                 log_info("[file_tools] chat/stream 已启用 file_tools")
                 reasoning, content, traces = await _stream_file_tools_turn(
                     req, messages, kb_context=merged_kb or "",
                 )
                 for ev in _yield_traces(traces):
                     yield _sse_event(ev)
+                yield _sse_event(
+                    _agent_step_sse(
+                        "file_tools",
+                        status="done",
+                        detail=f"完成 {len(traces)} 次工具调用" if traces else "未触发文件操作",
+                    ),
+                )
                 if not traces:
                     log_info("[file_tools] %s", _file_tools_noop_hint(req))
+                yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型生成中…"))
                 if reasoning.strip():
                     for chunk in iter_text_chunks(reasoning):
                         yield _sse_event({"type": "thinking_delta", "text": chunk})
                 for chunk in iter_text_chunks(content or "（模型返回空正文）"):
                     yield _sse_event({"type": "delta", "text": chunk})
+            elif req.external_mcp and user_id and settings.external_mcp_enabled:
+                if not _want_external_mcp(req, user_id):
+                    yield _sse_event(
+                        _agent_step_sse(
+                            "external_mcp",
+                            status="skipped",
+                            detail="未启用带 URL 的外部 MCP，请先在工具页导入并打开开关",
+                        ),
+                    )
+                    yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型流式生成中…"))
+                    async for reasoning_piece, content_piece in iter_edgefn_token_stream(messages):
+                        if reasoning_piece:
+                            yield _sse_event({"type": "thinking_delta", "text": reasoning_piece})
+                        if content_piece:
+                            yield _sse_event({"type": "delta", "text": content_piece})
+                elif _want_external_mcp(req, user_id):
+                    yield _sse_event(
+                        _agent_step_sse("external_mcp", status="running", detail="连接远程 MCP 并发现工具…"),
+                    )
+                    log_info("[external_mcp] chat/stream 已启用")
+                    reasoning, content, mcp_traces, disc_errs, tool_count = await _stream_external_mcp_turn(
+                        messages,
+                        user_id=user_id,
+                    )
+                    detail = f"已注册 {tool_count} 个远程工具，执行 {len(mcp_traces)} 次调用"
+                    if disc_errs:
+                        detail += f"；{len(disc_errs)} 个服务连接失败"
+                    yield _sse_event(_agent_step_sse("external_mcp", status="done", detail=detail))
+                    for ev in _yield_mcp_traces(mcp_traces):
+                        yield _sse_event(ev)
+                    if not mcp_traces:
+                        log_info("[external_mcp] %s", _external_mcp_noop_hint())
+                    yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型生成中…"))
+                    if reasoning.strip():
+                        for chunk in iter_text_chunks(reasoning):
+                            yield _sse_event({"type": "thinking_delta", "text": chunk})
+                    for chunk in iter_text_chunks(content or "（模型返回空正文）"):
+                        yield _sse_event({"type": "delta", "text": chunk})
             else:
+                yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型流式生成中…"))
                 if web_injected:
                     log_info("[web_search] chat/stream 已注入联网结果")
                 async for reasoning_piece, content_piece in iter_edgefn_token_stream(messages):
@@ -376,10 +599,27 @@ async def iter_chat_stream(
                         yield _sse_event({"type": "thinking_delta", "text": reasoning_piece})
                     if content_piece:
                         yield _sse_event({"type": "delta", "text": content_piece})
+            yield _sse_event(_agent_step_sse("llm_generate", status="done", detail="正文输出完成"))
         except RuntimeError as e:
             yield _sse_event({"type": "error", "message": str(e)})
+            yield _sse_event(_agent_step_sse("error", status="error", detail=str(e)))
         except Exception as e:  # noqa: BLE001
-            yield _sse_event({"type": "error", "message": f"对话上游异常：{e!s}"})
+            msg = f"对话上游异常：{e!s}"
+            yield _sse_event({"type": "error", "message": msg})
+            yield _sse_event(_agent_step_sse("error", status="error", detail=msg))
+        if session is not None and user_id is not None and req.knowledge_base_id:
+            from app.services.usage_analytics_service import log_usage_safe, record_chat_turn
+
+            await log_usage_safe(
+                session,
+                lambda: record_chat_turn(
+                    session,
+                    user_id=user_id,
+                    kb_id=req.knowledge_base_id,
+                    conversation_id=req.conversation_id,
+                ),
+            )
+            await session.commit()
         if session is not None and user_id is not None and req.knowledge_base_id and rag_hits:
             await _log_rag_retrieval_safe(
                 session,
@@ -401,6 +641,14 @@ async def iter_chat_stream(
         web_search=req.web_search,
     )
     yield _sse_event({"type": "conversation_id", "conversation_id": conv.id, "is_new": is_new})
+    yield _sse_event(
+        _agent_step_sse(
+            "conversation",
+            status="done",
+            detail="新建会话" if is_new else "续聊会话",
+            meta={"conversation_id": conv.id, "is_new": is_new},
+        ),
+    )
 
     user_row = await append_message(
         session,
@@ -424,7 +672,29 @@ async def iter_chat_stream(
     await session.commit()
     await session.refresh(user_row)
 
-    merged_kb, web_injected = await _await_prefetch()
+    if req.knowledge_base_id:
+        from app.services.usage_analytics_service import log_usage_safe, record_chat_turn
+
+        await log_usage_safe(
+            session,
+            lambda: record_chat_turn(
+                session,
+                user_id=user_id,
+                kb_id=req.knowledge_base_id,
+                conversation_id=conv.id,
+            ),
+        )
+        await session.commit()
+
+    merged_kb, web_injected = "", False
+    async for prefetch_out in _stream_prefetch():
+        if isinstance(prefetch_out, tuple):
+            merged_kb, web_injected = prefetch_out
+        else:
+            yield prefetch_out
+    rag_sources_ev = await _sse_rag_sources(session, req.knowledge_base_id, rag_hits)
+    if rag_sources_ev is not None:
+        yield _sse_event(rag_sources_ev)
     web_hint = _want_web_search(req, user_id) and not web_injected
 
     all_msgs = await load_messages_ordered(session, conv.id)
@@ -438,6 +708,8 @@ async def iter_chat_stream(
     summaries = await load_summaries_concat(session, conv.id)
 
     retrieval_md = ""
+    memory_hit_count = 0
+    yield _sse_event(_agent_step_sse("memory_retrieval", status="running", detail="对话记忆向量召回…"))
     try:
         q_vectors = await asyncio.to_thread(embed_texts, [qtext[:8000]])
         qvec = q_vectors[0]
@@ -448,9 +720,21 @@ async def iter_chat_stream(
             query_embedding=qvec,
             top_k=settings.memory_retrieval_top_k,
         )
+        memory_hit_count = len(hits)
         retrieval_md = format_retrieval_hits_markdown(hits)
-    except Exception:
+        yield _sse_event(
+            _agent_step_sse(
+                "memory_retrieval",
+                status="done",
+                detail=f"召回 {memory_hit_count} 条历史片段",
+                meta={"hit_count": memory_hit_count},
+            ),
+        )
+    except Exception as e:  # noqa: BLE001
         retrieval_md = ""
+        yield _sse_event(
+            _agent_step_sse("memory_retrieval", status="error", detail=f"记忆召回失败：{e!s}"),
+        )
 
     trimmed = apply_recent_message_window(all_msgs)
     pairs = history_pairs_from_messages(trimmed)
@@ -462,20 +746,30 @@ async def iter_chat_stream(
         memory_summaries=summaries,
         memory_retrieval=retrieval_md,
         history_pairs=pairs,
+        expert_prompt=expert_prompt,
     )
 
     assistant_body_parts: list[str] = []
     stream_ok = False
     try:
         if _want_file_tools(req, user_id):
+            yield _sse_event(_agent_step_sse("file_tools", status="running", detail="文件读写编排中…"))
             log_info("[file_tools] chat/stream(多轮) 已启用 file_tools")
             reasoning, content, traces = await _stream_file_tools_turn(
                 req, messages, kb_context=merged_kb or "",
             )
             for ev in _yield_traces(traces):
                 yield _sse_event(ev)
+            yield _sse_event(
+                _agent_step_sse(
+                    "file_tools",
+                    status="done",
+                    detail=f"完成 {len(traces)} 次工具调用" if traces else "未触发文件操作",
+                ),
+            )
             if not traces:
                 log_info("[file_tools] %s", _file_tools_noop_hint(req))
+            yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型生成中…"))
             if reasoning.strip():
                 for chunk in iter_text_chunks(reasoning):
                     yield _sse_event({"type": "thinking_delta", "text": chunk})
@@ -484,7 +778,51 @@ async def iter_chat_stream(
             for chunk in iter_text_chunks(body):
                 yield _sse_event({"type": "delta", "text": chunk})
             stream_ok = True
+        elif req.external_mcp and user_id and settings.external_mcp_enabled:
+            if not _want_external_mcp(req, user_id):
+                yield _sse_event(
+                    _agent_step_sse(
+                        "external_mcp",
+                        status="skipped",
+                        detail="未启用带 URL 的外部 MCP，请先在工具页导入并打开开关",
+                    ),
+                )
+                yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型流式生成中…"))
+                async for reasoning_piece, content_piece in iter_edgefn_token_stream(messages):
+                    if reasoning_piece:
+                        yield _sse_event({"type": "thinking_delta", "text": reasoning_piece})
+                    if content_piece:
+                        assistant_body_parts.append(content_piece)
+                        yield _sse_event({"type": "delta", "text": content_piece})
+                stream_ok = True
+            else:
+                yield _sse_event(
+                    _agent_step_sse("external_mcp", status="running", detail="连接远程 MCP 并发现工具…"),
+                )
+                log_info("[external_mcp] chat/stream(多轮) 已启用")
+                reasoning, content, mcp_traces, disc_errs, tool_count = await _stream_external_mcp_turn(
+                    messages,
+                    user_id=user_id,
+                )
+                detail = f"已注册 {tool_count} 个远程工具，执行 {len(mcp_traces)} 次调用"
+                if disc_errs:
+                    detail += f"；{len(disc_errs)} 个服务连接失败"
+                yield _sse_event(_agent_step_sse("external_mcp", status="done", detail=detail))
+                for ev in _yield_mcp_traces(mcp_traces):
+                    yield _sse_event(ev)
+                if not mcp_traces:
+                    log_info("[external_mcp] %s", _external_mcp_noop_hint())
+                yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型生成中…"))
+                if reasoning.strip():
+                    for chunk in iter_text_chunks(reasoning):
+                        yield _sse_event({"type": "thinking_delta", "text": chunk})
+                body = content or "（模型返回空正文）"
+                assistant_body_parts.append(body)
+                for chunk in iter_text_chunks(body):
+                    yield _sse_event({"type": "delta", "text": chunk})
+                stream_ok = True
         else:
+            yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型流式生成中…"))
             if web_injected:
                 log_info("[web_search] chat/stream(多轮) 已注入联网结果")
             async for reasoning_piece, content_piece in iter_edgefn_token_stream(messages):
@@ -494,10 +832,15 @@ async def iter_chat_stream(
                     assistant_body_parts.append(content_piece)
                     yield _sse_event({"type": "delta", "text": content_piece})
             stream_ok = True
+        if stream_ok:
+            yield _sse_event(_agent_step_sse("llm_generate", status="done", detail="正文输出完成"))
     except RuntimeError as e:
         yield _sse_event({"type": "error", "message": str(e)})
+        yield _sse_event(_agent_step_sse("error", status="error", detail=str(e)))
     except Exception as e:  # noqa: BLE001
-        yield _sse_event({"type": "error", "message": f"对话上游异常：{e!s}"})
+        msg = f"对话上游异常：{e!s}"
+        yield _sse_event({"type": "error", "message": msg})
+        yield _sse_event(_agent_step_sse("error", status="error", detail=msg))
 
     if stream_ok:
         assistant_text = "".join(assistant_body_parts).strip() or "（模型返回空正文）"

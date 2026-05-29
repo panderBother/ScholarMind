@@ -19,9 +19,11 @@ import {
   Trash2,
 } from "lucide-react";
 import { AssistantMarkdown } from "@/components/AssistantMarkdown";
+import { RequestTracePanel, shouldShowTraceStep, upsertTraceStep, type TraceStepRow } from "@/components/RequestTracePanel";
 import { useUi } from "@/components/ui/UiProvider";
 import { getAccessToken } from "@/services/auth";
-import { streamChatMessage, type ChatToolResult } from "@/services/chat";
+import { ChatRagSources } from "@/components/ChatRagSources";
+import { streamChatMessage, type AgentStepEvent, type ChatToolResult, type RagSourceDto } from "@/services/chat";
 import {
   type ConversationDto,
   fetchConversation,
@@ -58,6 +60,8 @@ type ChatMessage = {
   streamFinal?: boolean;
   thinkingContent?: string;
   fileToolLogs?: FileToolLog[];
+  ragSources?: RagSourceDto[];
+  ragKbId?: string;
 };
 
 function summarizeToolResult(payload: ChatToolResult): string {
@@ -107,6 +111,7 @@ export function ChatPage() {
   const [deepResearch, setDeepResearch] = useState(true);
   const [webSearch, setWebSearch] = useState(false);
   const [fileTools, setFileTools] = useState(false);
+  const [externalMcp, setExternalMcp] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [showThought, setShowThought] = useState(true);
@@ -124,8 +129,15 @@ export function ChatPage() {
   const lastUserQueryRef = useRef("");
   const [extracting, setExtracting] = useState(false);
   const [generatingReport, setGeneratingReport] = useState(false);
+  const [traceSteps, setTraceSteps] = useState<TraceStepRow[]>([]);
+  const [activeTraceId, setActiveTraceId] = useState<string | null>(null);
 
   const kbName = useMemo(() => kbs.find((k) => k.id === kbId)?.name ?? "选择知识库", [kbs, kbId]);
+
+  const pushTraceStep = useCallback((ev: AgentStepEvent) => {
+    if (!shouldShowTraceStep(ev)) return;
+    setTraceSteps((prev) => upsertTraceStep(prev, ev));
+  }, []);
 
   const lastTraceId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -135,6 +147,8 @@ export function ChatPage() {
     }
     return null;
   }, [messages]);
+
+  const displayTraceId = activeTraceId ?? lastTraceId;
 
   const loadKbs = useCallback(async () => {
     if (!getAccessToken()) {
@@ -330,6 +344,8 @@ export function ChatPage() {
       streamFinal: false,
     };
     setMessages((m) => [...m, userMsg, assistantPlaceholder]);
+    setTraceSteps([]);
+    setActiveTraceId(null);
     setLoading(true);
     let acc = "";
     let thinkingAcc = "";
@@ -342,10 +358,12 @@ export function ChatPage() {
           deep_research: deepResearch,
           web_search: webSearch,
           file_tools: fileTools,
+          external_mcp: externalMcp,
           conversation_id: conversationId,
         },
         {
           onTraceId: (traceId) => {
+            setActiveTraceId(traceId);
             setMessages((m) =>
               m.map((row) => (row.id === assistantId ? { ...row, trace_id: traceId } : row)),
             );
@@ -353,6 +371,9 @@ export function ChatPage() {
           onConversationId: (cid) => {
             setConversationId(cid);
             setStoredConversationId(cid);
+          },
+          onAgentStep: (payload) => {
+            pushTraceStep(payload);
           },
           onThinkingDelta: (chunk) => {
             thinkingAcc += chunk;
@@ -379,6 +400,11 @@ export function ChatPage() {
             );
           },
           onToolResult: (payload) => {
+            pushTraceStep({
+              step: "tool_call",
+              status: payload.ok ? "done" : "error",
+              detail: `${payload.tool} · ${summarizeToolResult(payload)}`,
+            });
             if (!payload.ok) return;
             const log: FileToolLog = {
               tool: payload.tool,
@@ -393,8 +419,16 @@ export function ChatPage() {
               ),
             );
           },
+          onRagSources: (ragKbId, sources) => {
+            setMessages((m) =>
+              m.map((row) =>
+                row.id === assistantId ? { ...row, ragKbId, ragSources: sources } : row,
+              ),
+            );
+          },
           onError: (msg) => {
             streamFailed = true;
+            pushTraceStep({ step: "error", status: "error", detail: msg });
             setErr(msg);
             const { thinking: tagThinking } = partitionThinkingBlocks(acc);
             const thinkingContent = mergeThinkingParts(thinkingAcc, tagThinking);
@@ -750,24 +784,12 @@ export function ChatPage() {
         )}
       </div>
       {!rightCollapsed ? (
-        <>
-          <div className="border-b border-slate-100 p-4">
-            <div className="break-all font-mono text-xs text-slate-600">{lastTraceId ?? "—"}</div>
-            <div className="mt-2 text-xs text-slate-500">与后端 ChatResponse.trace_id 一致</div>
-          </div>
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 text-xs">
-            <div className="rounded-lg border border-dashed border-slate-200 p-3 text-slate-500">
-              <p className="font-semibold text-slate-700">Agent 步骤</p>
-              <p className="mt-1 leading-relaxed">
-                正文已通过 SSE 流式渲染；此处可后续接入计划、检索、工具调用等元事件。
-              </p>
-            </div>
-          </div>
-          <div className="border-t border-slate-100 p-4">
-            <div className="text-xs font-semibold text-slate-500">当前知识库</div>
-            <div className="mt-1 text-sm font-medium text-slate-900">{kbName}</div>
-          </div>
-        </>
+        <RequestTracePanel
+          traceId={displayTraceId}
+          kbName={kbName}
+          steps={traceSteps}
+          loading={loading}
+        />
       ) : null}
     </aside>
   );
@@ -948,6 +970,9 @@ export function ChatPage() {
                     本次未返回可见推理字段（与服务商 / 模型实现有关）。
                   </p>
                 ))}
+              {m.ragSources && m.ragSources.length > 0 && m.ragKbId ? (
+                <ChatRagSources kbId={m.ragKbId} sources={m.ragSources} />
+              ) : null}
               {(m.fileToolLogs ?? []).some((log) => log.ok) ? (
                 <ul className="mb-3 space-y-1.5 rounded-lg border border-emerald-100 bg-emerald-50/80 px-3 py-2 text-xs text-emerald-900">
                   {(m.fileToolLogs ?? [])
@@ -1060,6 +1085,11 @@ export function ChatPage() {
                   setFileTools(next);
                   void setBuiltinMcpEnabled("file_writer", next).catch(() => undefined);
                 }}
+              />
+              <Toggle
+                label="外部 MCP"
+                on={externalMcp}
+                onToggle={() => setExternalMcp((v) => !v)}
               />
             </div>
             <button

@@ -123,6 +123,71 @@ async def test_kb_hybrid_search_published_item(async_client: AsyncClient) -> Non
 
 
 @pytest.mark.asyncio
+async def test_archived_item_excluded_from_hybrid_search(async_client: AsyncClient) -> None:
+    """AC-M-05：归档（下架）后混合检索不再命中；仅 published 参与检索。"""
+    reg = await async_client.post(
+        "/api/v1/auth/register",
+        json={"email": "archive@example.com", "password": "password123"},
+    )
+    assert reg.status_code == 200, reg.text
+    headers = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+
+    kb_id = (
+        await async_client.post(
+            "/api/v1/knowledge-bases",
+            headers=headers,
+            json={"name": "归档测试库"},
+        )
+    ).json()["id"]
+
+    category_id = (
+        await async_client.post(
+            f"/api/v1/knowledge-bases/{kb_id}/categories",
+            headers=headers,
+            json={"name": "分类", "parent_id": None, "sort_order": 0},
+        )
+    ).json()["id"]
+
+    unique = "ArchiveExcludeToken77"
+    item_id = (
+        await async_client.post(
+            f"/api/v1/knowledge-bases/{kb_id}/items",
+            headers=headers,
+            json={
+                "title": "将归档条目",
+                "content": f"独有词 {unique} 用于验证归档后不可检索。",
+                "category_id": category_id,
+                "publish": True,
+            },
+        )
+    ).json()["id"]
+
+    before = await async_client.get(
+        f"/api/v1/knowledge-bases/{kb_id}/search",
+        headers=headers,
+        params={"q": unique},
+    )
+    assert before.status_code == 200, before.text
+    assert before.json()["total"] >= 1
+    assert any(h["item_id"] == item_id for h in before.json()["items"])
+
+    archived = await async_client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/items/{item_id}/archive",
+        headers=headers,
+    )
+    assert archived.status_code == 200, archived.text
+    assert archived.json()["lifecycle_status"] == "archived"
+
+    after = await async_client.get(
+        f"/api/v1/knowledge-bases/{kb_id}/search",
+        headers=headers,
+        params={"q": unique},
+    )
+    assert after.status_code == 200, after.text
+    assert after.json()["total"] == 0
+
+
+@pytest.mark.asyncio
 async def test_kb_search_empty_query_rejected(async_client: AsyncClient) -> None:
     reg = await async_client.post(
         "/api/v1/auth/register",

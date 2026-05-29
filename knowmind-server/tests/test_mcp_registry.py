@@ -9,7 +9,7 @@ def test_import_and_toggle_builtin(tmp_path, monkeypatch) -> None:
     raw = json.dumps(
         {
             "mcpServers": {
-                "my-external": {"command": "node", "args": ["server.js"]},
+                "my-external": {"url": "https://mcp.example.com/v1"},
             },
         },
     )
@@ -18,6 +18,7 @@ def test_import_and_toggle_builtin(tmp_path, monkeypatch) -> None:
     tools = mcp_registry.list_tools(uid)
     assert len(tools.custom) == 1
     assert tools.custom[0].name == "my-external"
+    assert tools.custom[0].config.url == "https://mcp.example.com/v1"
 
     mcp_registry.update_builtin(uid, "file_writer", False)
     assert not mcp_registry.is_builtin_enabled(uid, "file_writer")

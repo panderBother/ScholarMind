@@ -159,12 +159,18 @@ class Document(Base):
         String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    file_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     storage_key: Mapped[str] = mapped_column(String(1024), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     file_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     md5: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    parsed_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    parsed_summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    parsed_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parse_progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    parse_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -326,6 +332,37 @@ class KnowledgeGap(Base):
     )
 
 
+class KnowledgeUsageEvent(Base):
+    """知识使用热度事件：检索命中、RAG 引用、对话轮次。"""
+
+    __tablename__ = "knowledge_usage_events"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    kb_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    item_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("knowledge_items.id", ondelete="SET NULL"), nullable=True
+    )
+    document_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True
+    )
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    conversation_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class ResearchReport(Base):
     """会话一键生成的结构化研究报告。"""
 
@@ -348,6 +385,32 @@ class ResearchReport(Base):
     outline_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     citations_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="ready", server_default="ready")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class ExpertAgent(Base):
+    """按知识库一键生成的领域专家 Agent。"""
+
+    __tablename__ = "expert_agents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    kb_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
