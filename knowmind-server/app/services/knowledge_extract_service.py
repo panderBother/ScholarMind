@@ -7,9 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.conversation_service import get_conversation_for_user, load_messages_ordered
 from app.services.distill_service import DistillError
-from app.services.edgefn_client import complete_chat_turn
+from app.services.edgefn_client import complete_chat_turn, turn_visible_text
 from app.services.knowledge_category_service import ensure_default_category
 from app.services.knowledge_item_service import create_item
+from app.utils.llm_json import parse_llm_json_array
 
 
 async def extract_knowledge_drafts(
@@ -42,11 +43,10 @@ async def extract_knowledge_drafts(
 {transcript}
 """
     turn = await complete_chat_turn([{"role": "user", "content": prompt}])
-    text = (turn.content or "").strip()
-    m = re.search(r"\[[\s\S]*\]", text)
-    if not m:
+    text = turn_visible_text(turn) or (turn.content or turn.reasoning or "").strip()
+    drafts = parse_llm_json_array(text)
+    if drafts is None:
         raise DistillError("LLM 未返回有效 JSON")
-    drafts = json.loads(m.group(0))
     if not isinstance(drafts, list):
         raise DistillError("格式错误")
     out: list[dict] = []

@@ -54,6 +54,24 @@ class ChromaVectorIndex:
         except Exception as e:
             log.warning("chroma delete failed: %s", e)
 
+    def delete_chunks_for_doc(self, doc_id: str) -> None:
+        if not doc_id:
+            return
+        try:
+            self._col.delete(where={"doc_id": doc_id})
+            log.info("chroma delete where doc_id=%s", doc_id)
+        except Exception as e:
+            log.warning("chroma delete by doc_id failed: %s", e)
+
+    def delete_chunks_for_item(self, item_id: str) -> None:
+        if not item_id:
+            return
+        try:
+            self._col.delete(where={"item_id": item_id})
+            log.info("chroma delete where item_id=%s", item_id)
+        except Exception as e:
+            log.warning("chroma delete by item_id failed: %s", e)
+
     def list_chunk_ids_for_doc(self, doc_id: str) -> list[str]:
         if not doc_id:
             return []

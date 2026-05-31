@@ -1,12 +1,10 @@
 import clsx from "clsx";
 import {
-  BarChart3,
   BookOpen,
   Bot,
   FileText,
   LayoutDashboard,
   MessageSquare,
-  Search,
   Settings,
   Sparkles,
   Wrench,
@@ -20,13 +18,11 @@ function isProductionPath(pathname: string): boolean {
 /** 主导航项：与 PRD 侧栏信息架构一致，便于后续权限裁剪 */
 const NAV = [
   { to: "/chat", label: "智能对话", icon: MessageSquare },
-  { to: "/search", label: "知识检索", icon: Search },
   { to: "/knowledge-bases", label: "知识库", icon: BookOpen },
   { to: "/documents", label: "文档管理", icon: FileText },
   { to: "/production", label: "知识生产", icon: Sparkles, matchProduction: true },
   { to: "/reports", label: "报告", icon: LayoutDashboard },
   { to: "/experts", label: "专家", icon: Bot },
-  { to: "/evaluation", label: "评估看板", icon: BarChart3 },
   { to: "/tools", label: "工具", icon: Wrench },
   { to: "/settings", label: "设置", icon: Settings },
 ] as const;

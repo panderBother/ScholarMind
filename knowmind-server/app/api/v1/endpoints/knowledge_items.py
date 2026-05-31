@@ -184,6 +184,20 @@ async def publish_item(
     return KnowledgeItemOut.model_validate(item)
 
 
+@router.post("/{kb_id}/items/{item_id}/reindex", response_model=KnowledgeItemOut)
+async def reindex_item(
+    kb_id: str,
+    item_id: str,
+    session: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    try:
+        item = await item_service.reindex_item(session, user_id, kb_id, item_id)
+    except item_service.KnowledgeItemError as e:
+        raise HTTPException(e.status_code, detail=e.message) from e
+    return KnowledgeItemOut.model_validate(item)
+
+
 @router.post("/{kb_id}/items/{item_id}/archive", response_model=KnowledgeItemOut)
 async def archive_item(
     kb_id: str,

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import clsx from "clsx";
 import { BookOpen, Eye, EyeOff, Microscope } from "lucide-react";
 
-import { authLogin, authRegister, setAccessToken } from "@/services/auth";
+import { authLogin, authRegister, storeAuthTokens } from "@/services/auth";
 
 /**
  * 登录 / 注册：桌面端分屏品牌区；移动端顶部品牌 + 插画占位 + 单卡片表单（对齐移动原型）。
@@ -26,7 +26,7 @@ export function LoginPage() {
         tab === "login"
           ? await authLogin(email.trim(), password)
           : await authRegister(email.trim(), password);
-      setAccessToken(res.access_token);
+      storeAuthTokens(res);
       nav("/knowledge-bases", { replace: true });
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : "请求失败");

@@ -15,22 +15,23 @@ from app.models.mcp_schemas import (
     ImportMcpResponse,
     McpServerConfig,
     McpToolsResponse,
+    UpdateCustomMcpRequest,
 )
 
 _REGISTRY_DIR = _SERVER_ROOT / "data" / "mcp" / "users"
 
-_BUILTIN_AVAILABLE = frozenset({"file_writer", "web_search"})
+_BUILTIN_AVAILABLE = frozenset({"file_writer", "web_search", "arxiv", "semantic_scholar"})
 
 _BUILTIN_CATALOG: list[dict[str, str]] = [
     {
         "id": "arxiv",
         "name": "arXiv",
-        "description": "按关键词或 ID 检索 arXiv 论文元数据",
+        "description": "按关键词或 ID 检索 arXiv 文档元数据",
     },
     {
         "id": "semantic_scholar",
         "name": "Semantic Scholar",
-        "description": "论文引用图与 TL;DR 摘要",
+        "description": "文档引用图与 TL;DR 摘要",
     },
     {
         "id": "web_search",
@@ -132,6 +133,36 @@ def update_builtin(user_id: str, tool_id: str, enabled: bool) -> McpToolsRespons
     return list_tools(user_id)
 
 
+_REPO_ROOT = _SERVER_ROOT.parent
+
+
+def _default_stdio_cwd() -> str:
+    return str(_REPO_ROOT)
+
+
+def _normalize_server_config(cfg: dict[str, Any]) -> McpServerConfig:
+    url = (cfg.get("url") or "").strip() or None
+    command = (cfg.get("command") or "").strip() or None
+    cwd = (cfg.get("cwd") or "").strip() or None
+    if command and not cwd:
+        cwd = _default_stdio_cwd()
+    return McpServerConfig(
+        command=command,
+        args=[str(a) for a in (cfg.get("args") or [])],
+        env={str(k): str(v) for k, v in (cfg.get("env") or {}).items()},
+        headers={str(k): str(v) for k, v in (cfg.get("headers") or {}).items()},
+        url=url,
+        cwd=cwd,
+    )
+
+
+def _validate_server_config(config: McpServerConfig) -> None:
+    url = (config.url or "").strip()
+    command = (config.command or "").strip()
+    if not url and not command:
+        raise ValueError("须填写 url 或 command 至少一项")
+
+
 def _custom_from_dict(raw: dict[str, Any]) -> CustomMcpToolDto:
     cfg = raw.get("config") or {}
     return CustomMcpToolDto(
@@ -140,12 +171,7 @@ def _custom_from_dict(raw: dict[str, Any]) -> CustomMcpToolDto:
         description=str(raw.get("description") or "外部导入的 MCP Server"),
         enabled=bool(raw.get("enabled", True)),
         source=str(raw.get("source") or "import"),
-        config=McpServerConfig(
-            command=cfg.get("command"),
-            args=list(cfg.get("args") or []),
-            env=dict(cfg.get("env") or {}),
-            url=cfg.get("url"),
-        ),
+        config=_normalize_server_config(cfg if isinstance(cfg, dict) else {}),
         imported_at=str(raw.get("imported_at") or ""),
     )
 
@@ -174,27 +200,28 @@ def import_mcp_json(user_id: str, raw_json: str) -> ImportMcpResponse:
     existing_names = {c.get("name") for c in custom}
     imported = 0
     skipped = 0
+    skip_details: list[str] = []
     now = datetime.now(timezone.utc).isoformat()
 
     for name, cfg in servers.items():
-        if not (cfg.get("url") or "").strip():
+        url = (cfg.get("url") or "").strip()
+        command = (cfg.get("command") or "").strip()
+        if not url and not command:
             skipped += 1
+            skip_details.append(f"{name}: 缺少 url 或 command")
             continue
         if name in existing_names:
             skipped += 1
+            skip_details.append(f"{name}: 已存在，跳过重复导入")
             continue
+        normalized = _normalize_server_config(cfg)
         entry = {
             "id": str(uuid.uuid4()),
             "name": name,
             "description": "从外部 mcp.json 导入",
             "enabled": True,
             "source": "import",
-            "config": {
-                "command": cfg.get("command"),
-                "args": cfg.get("args") or [],
-                "env": cfg.get("env") or {},
-                "url": cfg.get("url"),
-            },
+            "config": normalized.model_dump(),
             "imported_at": now,
         }
         custom.append(entry)
@@ -204,7 +231,46 @@ def import_mcp_json(user_id: str, raw_json: str) -> ImportMcpResponse:
     reg["custom"] = custom
     save_registry(user_id, reg)
     dto = list_tools(user_id)
-    return ImportMcpResponse(imported=imported, skipped=skipped, custom=dto.custom)
+    return ImportMcpResponse(
+        imported=imported,
+        skipped=skipped,
+        skip_details=skip_details,
+        custom=dto.custom,
+    )
+
+
+def update_custom(user_id: str, custom_id: str, body: UpdateCustomMcpRequest) -> McpToolsResponse:
+    _validate_server_config(body.config)
+    reg = load_registry(user_id)
+    custom: list[dict[str, Any]] = list(reg.get("custom") or [])
+    found_idx: int | None = None
+    for i, c in enumerate(custom):
+        if c.get("id") == custom_id:
+            found_idx = i
+            break
+    if found_idx is None:
+        raise ValueError("未找到该 MCP 配置")
+    name = body.name.strip()
+    if not name:
+        raise ValueError("服务名称不能为空")
+    for c in custom:
+        if c.get("id") != custom_id and c.get("name") == name:
+            raise ValueError(f"已存在同名服务: {name}")
+    now = datetime.now(timezone.utc).isoformat()
+    prev = custom[found_idx]
+    custom[found_idx] = {
+        "id": custom_id,
+        "name": name,
+        "description": (body.description or "外部导入的 MCP Server").strip(),
+        "enabled": bool(body.enabled),
+        "source": str(prev.get("source") or "import"),
+        "config": body.config.model_dump(),
+        "imported_at": str(prev.get("imported_at") or now),
+        "updated_at": now,
+    }
+    reg["custom"] = custom
+    save_registry(user_id, reg)
+    return list_tools(user_id)
 
 
 def update_custom_enabled(user_id: str, custom_id: str, enabled: bool) -> McpToolsResponse:

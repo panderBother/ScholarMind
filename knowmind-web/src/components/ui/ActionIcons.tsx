@@ -1,9 +1,10 @@
-import { Archive, CheckCircle2, Eye, Pencil, Trash2 } from "lucide-react";
+import { Archive, CheckCircle2, Eye, Pencil, RefreshCw, Trash2 } from "lucide-react";
 
 type Props = {
   onPreview?: () => void;
   onEdit?: () => void;
   onPublish?: () => void;
+  onReindex?: () => void;
   onArchive?: () => void;
   onDelete?: () => void;
 };
@@ -12,8 +13,8 @@ const btn =
   "rounded-lg p-1.5 text-slate-400 transition disabled:opacity-40 disabled:pointer-events-none";
 
 /** 列表行 / 卡片右上角操作图标 */
-export function ActionIcons({ onPreview, onEdit, onPublish, onArchive, onDelete }: Props) {
-  if (!onPreview && !onEdit && !onPublish && !onArchive && !onDelete) return null;
+export function ActionIcons({ onPreview, onEdit, onPublish, onReindex, onArchive, onDelete }: Props) {
+  if (!onPreview && !onEdit && !onPublish && !onReindex && !onArchive && !onDelete) return null;
 
   return (
     <div className="flex shrink-0 items-center gap-0.5">
@@ -57,6 +58,20 @@ export function ActionIcons({ onPreview, onEdit, onPublish, onArchive, onDelete 
           aria-label="发布"
         >
           <CheckCircle2 className="h-4 w-4" />
+        </button>
+      ) : null}
+      {onReindex ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onReindex();
+          }}
+          className={`${btn} hover:bg-sky-50 hover:text-sky-600`}
+          title="重建检索索引"
+          aria-label="重建检索索引"
+        >
+          <RefreshCw className="h-4 w-4" />
         </button>
       ) : null}
       {onArchive ? (

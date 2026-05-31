@@ -49,6 +49,15 @@ from app.services.memory_prompt import (
     history_pairs_from_messages,
     retrieval_query_text,
 )
+from app.services.chat_prefetch import (
+    PrefetchResult,
+    fetch_arxiv_md,
+    fetch_semantic_scholar_md,
+    merge_context_parts,
+    want_arxiv,
+    want_semantic_scholar,
+    yield_prefetch_steps,
+)
 from app.services.redis_conv import set_recent_messages
 
 
@@ -78,18 +87,27 @@ async def _sse_rag_sources(
 ) -> dict | None:
     if not kb_id or not hits:
         return None
+    from app.core.config import get_settings
     from app.services.rag_citations import build_rag_sources_payload
+    from app.services.rag_logging_service import filter_confident_rag_hits
 
-    sources = await build_rag_sources_payload(session, hits)
+    min_top = get_settings().rag_chat_min_relevance_score
+    confident = filter_confident_rag_hits(hits, min_top_score=min_top, max_hits=len(hits))
+    if not confident:
+        return None
+    sources = await build_rag_sources_payload(session, confident)
     if not sources:
         return None
     return {"type": "rag_sources", "kb_id": kb_id, "sources": sources}
 
 
-def _rag_step_done(hits: list, *, kb_markdown: str = "") -> dict:
+def _rag_step_done(hits: list, *, kb_markdown: str = "", diag: dict | None = None) -> dict:
+    diag = diag or {}
     scores = [h.score for h in hits] if hits else []
     avg = sum(scores) / len(scores) if scores else 0.0
     hit_count = len(hits)
+    candidate_count = int(diag.get("candidate_count", 0))
+    top_score = float(diag.get("top_score", 0.0))
     if hit_count == 0 and kb_markdown and "### 摘录" in kb_markdown:
         hit_count = len(re.findall(r"^### 摘录", kb_markdown, flags=re.MULTILINE))
         if hit_count > 0:
@@ -97,46 +115,120 @@ def _rag_step_done(hits: list, *, kb_markdown: str = "") -> dict:
             avg = 0.0
     if hit_count > 0:
         detail = f"命中 {hit_count} 条片段，平均相关度 {avg:.0%}"
+    elif candidate_count > 0:
+        detail = f"检索到 {candidate_count} 条，相关度不足（最高 {top_score:.0%}），未注入"
     else:
         detail = "未命中相关内容"
     return _agent_step_sse(
         "rag_retrieval",
         status="done",
         detail=detail,
-        meta={"hit_count": hit_count, "avg_score": round(avg, 3)},
+        meta={
+            "hit_count": hit_count,
+            "avg_score": round(avg, 3),
+            "candidate_count": candidate_count,
+            "top_score": round(top_score, 3),
+        },
     )
 
 
-async def _yield_prefetch_agent_steps(
+async def _stream_prefetch_bundle(
     *,
     req: ChatRequest,
     user_id: str | None,
-    rag_task: asyncio.Task[tuple[str, list]] | None,
+    kb_context: str,
+    rag_task: asyncio.Task[tuple[str, list, dict]] | None,
     web_task: asyncio.Task[str] | None,
-    await_prefetch: Callable[[], Awaitable[tuple[str, bool]]],
+    arxiv_task: asyncio.Task[str] | None,
+    s2_task: asyncio.Task[str] | None,
     rag_hits: list,
-) -> AsyncIterator[str | tuple[str, bool]]:
-    if rag_task is not None:
-        yield _sse_event(_agent_step_sse("rag_retrieval", status="running", detail="Hybrid RAG 检索中…"))
-    if web_task is not None:
-        yield _sse_event(_agent_step_sse("web_search", status="running", detail="联网搜索中…"))
-    merged_kb, web_injected = await await_prefetch()
-    if rag_task is not None:
-        yield _sse_event(_rag_step_done(rag_hits, kb_markdown=merged_kb))
-    elif req.knowledge_base_id:
-        yield _sse_event(_agent_step_sse("rag_retrieval", status="skipped", detail="未绑定知识库或未登录"))
-    if web_task is not None:
-        yield _sse_event(
-            _agent_step_sse(
-                "web_search",
-                status="done",
-                detail="已注入联网结果" if web_injected else "无可用联网结果",
-                meta={"injected": web_injected},
-            ),
+    rag_diag: dict,
+) -> AsyncIterator[str | PrefetchResult]:
+    if req.deep_research:
+
+        async def load_rag() -> tuple[str, list]:
+            if rag_task is not None:
+                kb_md, hits, diag = await rag_task
+            elif user_id and req.knowledge_base_id:
+                kb_md, hits, diag = await _load_kb_context_isolated(
+                    user_id,
+                    req.knowledge_base_id,
+                    req.message,
+                )
+            else:
+                return "", []
+            rag_hits.clear()
+            rag_hits.extend(hits)
+            rag_diag.clear()
+            rag_diag.update(diag)
+            return kb_md, hits
+
+        async def fetch_web() -> str:
+            if web_task is not None:
+                return await web_task
+            return await _fetch_web_markdown(req, user_id)
+
+        from app.services.deep_research_executor import execute_deep_research_prefetch
+
+        async for item in execute_deep_research_prefetch(
+            req=req,
+            user_id=user_id,
+            kb_context=kb_context,
+            load_rag=load_rag,
+            rag_hits=rag_hits,
+            rag_diag=rag_diag,
+            agent_step_sse=_agent_step_sse,
+            sse_event=_sse_event,
+            rag_step_done=_rag_step_done,
+            want_web_search=_want_web_search,
+            fetch_web=fetch_web,
+        ):
+            yield item
+        return
+
+    attachment_md = ""
+
+    async def _await_prefetch() -> PrefetchResult:
+        nonlocal rag_hits
+        nonlocal attachment_md
+        kb_from_rag = (kb_context or "").strip()
+        if rag_task is not None:
+            kb_from_rag, new_hits, diag = await rag_task
+            rag_hits.clear()
+            rag_hits.extend(new_hits)
+            rag_diag.clear()
+            rag_diag.update(diag)
+        web_md = await web_task if web_task is not None else ""
+        arxiv_md = await arxiv_task if arxiv_task is not None else ""
+        s2_md = await s2_task if s2_task is not None else ""
+        if user_id and req.attachment_ids:
+            from app.services.chat_attachment_service import load_attachment_context_async
+
+            attachment_md = await load_attachment_context_async(user_id, req.attachment_ids)
+        merged = merge_context_parts(kb_from_rag, web_md, arxiv_md, s2_md, attachment_md)
+        return PrefetchResult(
+            merged_context=merged,
+            web_injected=bool((web_md or "").strip()),
+            arxiv_injected=bool((arxiv_md or "").strip()),
+            semantic_scholar_injected=bool((s2_md or "").strip()),
         )
-    elif _want_web_search(req, user_id):
-        yield _sse_event(_agent_step_sse("web_search", status="skipped", detail="联网搜索未返回结果"))
-    yield (merged_kb, web_injected)
+
+    async for item in yield_prefetch_steps(
+        req=req,
+        user_id=user_id,
+        rag_task=rag_task,
+        web_task=web_task,
+        arxiv_task=arxiv_task,
+        s2_task=s2_task,
+        await_prefetch=_await_prefetch,
+        rag_hits=rag_hits,
+        rag_diag=rag_diag,
+        agent_step_sse=_agent_step_sse,
+        sse_event=_sse_event,
+        rag_step_done=_rag_step_done,
+        want_web_search=_want_web_search,
+    ):
+        yield item
 
 
 def _want_file_tools(req: ChatRequest, user_id: str | None = None) -> bool:
@@ -175,7 +267,7 @@ def _want_external_mcp(req: ChatRequest, user_id: str | None = None) -> bool:
 
 def _external_mcp_noop_hint() -> str:
     return (
-        "未调用外部 MCP：请先在「工具与集成」导入带 url 的 MCP 并开启开关，"
+        "未调用外部 MCP：请先在「工具与集成」导入 MCP（url 或 command）并开启开关，"
         "或在对话页打开「外部 MCP」。"
     )
 
@@ -226,30 +318,37 @@ async def _fetch_web_markdown(req: ChatRequest, user_id: str | None = None) -> s
     return await fetch_web_context_markdown(req.message)
 
 
+def _rag_diag_from_result(rag) -> dict:
+    return {
+        "candidate_count": int(getattr(rag, "candidate_count", 0) or 0),
+        "top_score": float(getattr(rag, "top_candidate_score", 0.0) or 0.0),
+    }
+
+
 async def _load_kb_context(
     session: AsyncSession,
     user_id: str,
     kb_id: str | None,
     query: str,
-) -> tuple[str, list]:
+) -> tuple[str, list, dict]:
     from app.services.rag_context import search_kb
 
     if not kb_id or not str(kb_id).strip():
-        return "", []
+        return "", [], {}
     rag = await search_kb(session, user_id, kb_id, query)
-    return rag.markdown, rag.hits
+    return rag.markdown, rag.hits, _rag_diag_from_result(rag)
 
 
 async def _load_kb_context_isolated(
     user_id: str,
     kb_id: str | None,
     query: str,
-) -> tuple[str, list]:
+) -> tuple[str, list, dict]:
     """独立会话做 RAG，可与主 session 的会话写入并行，避免 SQLAlchemy 并发报错。"""
     from app.db.session import get_session_factory
 
     if not kb_id or not str(kb_id).strip():
-        return "", []
+        return "", [], {}
     factory = get_session_factory()
     async with factory() as rag_session:
         return await _load_kb_context(rag_session, user_id, kb_id, query)
@@ -454,6 +553,7 @@ async def iter_chat_stream(
     session: AsyncSession | None = None,
     user_id: str | None = None,
     expert_prompt: str | None = None,
+    expert_id: str | None = None,
 ) -> AsyncIterator[str]:
     """
     SSE：`trace_id` → `conversation_id`（多轮）→ 可选 `thinking_delta` / `delta` → `done`。
@@ -474,36 +574,36 @@ async def iter_chat_stream(
 
     use_memory = session is not None and user_id is not None
     rag_hits: list = []
-    rag_task: asyncio.Task[tuple[str, list]] | None = None
+    rag_diag: dict = {}
+    rag_task: asyncio.Task[tuple[str, list, dict]] | None = None
     web_task: asyncio.Task[str] | None = None
+    arxiv_task: asyncio.Task[str] | None = None
+    s2_task: asyncio.Task[str] | None = None
     if user_id and req.knowledge_base_id:
         rag_task = asyncio.create_task(
             _load_kb_context_isolated(user_id, req.knowledge_base_id, req.message),
         )
-    if _want_web_search(req, user_id):
+    if _want_web_search(req, user_id) and not req.deep_research:
         web_task = asyncio.create_task(_fetch_web_markdown(req, user_id))
-
-    async def _await_prefetch() -> tuple[str, bool]:
-        nonlocal rag_hits
-        kb_from_rag = (kb_context or "").strip()
-        if rag_task is not None:
-            kb_from_rag, new_hits = await rag_task
-            rag_hits.clear()
-            rag_hits.extend(new_hits)
-        web_md = await web_task if web_task is not None else ""
-        return _merge_kb_and_web(kb_from_rag, web_md)
+    if want_arxiv(req, user_id) and not req.deep_research:
+        arxiv_task = asyncio.create_task(fetch_arxiv_md(req, user_id))
+    if want_semantic_scholar(req, user_id) and not req.deep_research:
+        s2_task = asyncio.create_task(fetch_semantic_scholar_md(req, user_id))
 
     async def _stream_prefetch():
-        merged: tuple[str, bool] = ("", False)
-        async for prefetch_item in _yield_prefetch_agent_steps(
+        merged: PrefetchResult = PrefetchResult("", False, False, False)
+        async for prefetch_item in _stream_prefetch_bundle(
             req=req,
             user_id=user_id,
+            kb_context=kb_context,
             rag_task=rag_task,
             web_task=web_task,
-            await_prefetch=_await_prefetch,
+            arxiv_task=arxiv_task,
+            s2_task=s2_task,
             rag_hits=rag_hits,
+            rag_diag=rag_diag,
         ):
-            if isinstance(prefetch_item, tuple):
+            if isinstance(prefetch_item, PrefetchResult):
                 merged = prefetch_item
             else:
                 yield prefetch_item
@@ -512,8 +612,9 @@ async def iter_chat_stream(
     if not use_memory:
         merged_kb, web_injected = "", False
         async for prefetch_out in _stream_prefetch():
-            if isinstance(prefetch_out, tuple):
-                merged_kb, web_injected = prefetch_out
+            if isinstance(prefetch_out, PrefetchResult):
+                merged_kb = prefetch_out.merged_context
+                web_injected = prefetch_out.web_injected
             else:
                 yield prefetch_out
         rag_sources_ev = await _sse_rag_sources(session, req.knowledge_base_id, rag_hits)
@@ -526,6 +627,7 @@ async def iter_chat_stream(
             web_search=web_hint,
             kb_context=merged_kb or None,
             file_tools=_want_file_tools(req, user_id),
+            external_mcp=bool(req.external_mcp),
             expert_prompt=expert_prompt,
         )
         try:
@@ -639,6 +741,7 @@ async def iter_chat_stream(
         knowledge_base_id=req.knowledge_base_id,
         deep_research=req.deep_research,
         web_search=req.web_search,
+        expert_id=expert_id,
     )
     yield _sse_event({"type": "conversation_id", "conversation_id": conv.id, "is_new": is_new})
     yield _sse_event(
@@ -688,8 +791,9 @@ async def iter_chat_stream(
 
     merged_kb, web_injected = "", False
     async for prefetch_out in _stream_prefetch():
-        if isinstance(prefetch_out, tuple):
-            merged_kb, web_injected = prefetch_out
+        if isinstance(prefetch_out, PrefetchResult):
+            merged_kb = prefetch_out.merged_context
+            web_injected = prefetch_out.web_injected
         else:
             yield prefetch_out
     rag_sources_ev = await _sse_rag_sources(session, req.knowledge_base_id, rag_hits)
@@ -742,6 +846,7 @@ async def iter_chat_stream(
         deep_research=req.deep_research,
         web_search=web_hint,
         file_tools=_want_file_tools(req, user_id),
+        external_mcp=bool(req.external_mcp),
         kb_context=merged_kb or None,
         memory_summaries=summaries,
         memory_retrieval=retrieval_md,

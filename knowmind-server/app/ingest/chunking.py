@@ -8,9 +8,9 @@ from app.ingest.types import PageText
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_MAX_CHARS = 1800
-_DEFAULT_OVERLAP = 200
-_DEFAULT_MIN_CHARS = 80
+_DEFAULT_MAX_CHARS = 640
+_DEFAULT_MIN_CHARS = 120
+_DEFAULT_OVERLAP = 100
 
 
 @dataclass
@@ -82,13 +82,56 @@ def _split_semantic_units(text: str) -> list[str]:
     return units or [text.strip()]
 
 
-def _cosine(a: list[float], b: list[float]) -> float:
-    import math
+def _pack_units(
+    units: list[str],
+    *,
+    min_chars: int,
+    max_chars: int,
+    page: int,
+    overlap: int,
+) -> list[TextChunk]:
+    """
+    按语义单元打包：仅将 < min_chars 的碎片与相邻合并；单块不超过 max_chars，不凑满大块。
+    """
+    chunks: list[TextChunk] = []
+    buf = ""
 
-    dot = sum(x * y for x, y in zip(a, b, strict=True))
-    na = math.sqrt(sum(x * x for x in a)) or 1e-9
-    nb = math.sqrt(sum(x * x for x in b)) or 1e-9
-    return dot / (na * nb)
+    def flush_buffer() -> None:
+        nonlocal buf
+        piece = buf.strip()
+        if piece:
+            chunks.append(TextChunk(text=piece, page=page))
+        buf = ""
+
+    for unit in units:
+        u = unit.strip()
+        if not u:
+            continue
+        if len(u) > max_chars:
+            flush_buffer()
+            chunks.extend(chunk_text(u, page=page, max_chars=max_chars, overlap=overlap))
+            continue
+        candidate = f"{buf}\n\n{u}" if buf else u
+        if len(candidate) > max_chars:
+            flush_buffer()
+            buf = u
+        else:
+            buf = candidate
+        if len(buf) >= min_chars:
+            flush_buffer()
+
+    tail = buf.strip()
+    if tail:
+        if chunks and len(tail) < min_chars:
+            merged = f"{chunks[-1].text}\n\n{tail}"
+            if len(merged) <= max_chars:
+                chunks[-1] = TextChunk(text=merged, page=page)
+            else:
+                chunks.append(TextChunk(text=tail, page=page))
+        else:
+            chunks.append(TextChunk(text=tail, page=page))
+
+    return chunks
 
 
 def semantic_chunk_text(
@@ -97,11 +140,12 @@ def semantic_chunk_text(
     page: int = 0,
     max_chars: int = _DEFAULT_MAX_CHARS,
     min_chars: int = _DEFAULT_MIN_CHARS,
-    breakpoint_percentile: float = 25.0,
+    overlap: int = _DEFAULT_OVERLAP,
+    breakpoint_percentile: float = 25.0,  # noqa: ARG001 — 保留签名兼容
 ) -> list[TextChunk]:
     """
-    语义切块：对相邻单元做嵌入相似度，在相似度骤降处切开，再合并到 max_chars 以内。
-    嵌入失败时回退为固定长度滑窗。
+    语义切块：段落/句号切分 → 仅对 < min_chars 轻量合并 → 单块上限 max_chars。
+    不再按嵌入相似度合并到超大块。
     """
     t = (text or "").strip()
     if not t:
@@ -111,72 +155,50 @@ def semantic_chunk_text(
 
     units = _split_semantic_units(t)
     if len(units) <= 1:
-        return chunk_text(t, page=page, max_chars=max_chars)
+        return chunk_text(t, page=page, max_chars=max_chars, overlap=overlap)
 
-    try:
-        from app.ingest.embedding import embed_texts
-
-        vectors = embed_texts([u[:4000] for u in units])
-    except Exception:
-        log.warning("语义切块嵌入失败，回退滑窗切块", exc_info=True)
-        return chunk_text(t, page=page, max_chars=max_chars)
-
-    breakpoints: set[int] = set()
-    if len(vectors) > 1:
-        sims = [_cosine(vectors[i], vectors[i + 1]) for i in range(len(vectors) - 1)]
-        try:
-            import numpy as np
-
-            threshold = float(np.percentile(sims, breakpoint_percentile))
-        except Exception:
-            threshold = sorted(sims)[max(0, len(sims) // 4)]
-        for i, sim in enumerate(sims):
-            if sim <= threshold:
-                breakpoints.add(i)
-
-    chunks: list[TextChunk] = []
-    buf: list[str] = []
-    buflen = 0
-
-    def flush() -> None:
-        nonlocal buf, buflen
-        if not buf:
-            return
-        joined = "\n\n".join(buf).strip()
-        if joined:
-            chunks.append(TextChunk(text=joined, page=page))
-        buf = []
-        buflen = 0
-
-    for i, unit in enumerate(units):
-        if buf and (i - 1) in breakpoints and buflen >= min_chars:
-            flush()
-        ulen = len(unit)
-        if buf and buflen + ulen + 2 > max_chars:
-            flush()
-        if ulen > max_chars:
-            flush()
-            chunks.extend(chunk_text(unit, page=page, max_chars=max_chars))
-            continue
-        buf.append(unit)
-        buflen += ulen + 2
-
-    flush()
-    return chunks if chunks else chunk_text(t, page=page, max_chars=max_chars)
+    packed = _pack_units(
+        units,
+        min_chars=min_chars,
+        max_chars=max_chars,
+        page=page,
+        overlap=overlap,
+    )
+    return packed if packed else chunk_text(t, page=page, max_chars=max_chars, overlap=overlap)
 
 
 def semantic_chunk_pages(
     pages: list[PageText],
     *,
     max_chars: int = _DEFAULT_MAX_CHARS,
+    min_chars: int = _DEFAULT_MIN_CHARS,
+    overlap: int = _DEFAULT_OVERLAP,
 ) -> list[TextChunk]:
-    """多页文档：按页语义切块后合并。"""
+    """多页文档：按页语义切块。"""
     chunks: list[TextChunk] = []
     for pt in pages:
         t = (pt.text or "").strip()
         if not t:
             continue
         chunks.extend(
-            semantic_chunk_text(t, page=pt.page_index, max_chars=max_chars),
+            semantic_chunk_text(
+                t,
+                page=pt.page_index,
+                max_chars=max_chars,
+                min_chars=min_chars,
+                overlap=overlap,
+            ),
         )
     return chunks
+
+
+def chunk_settings_from_config() -> tuple[int, int, int]:
+    """从运行时配置读取切块参数。"""
+    from app.core.config import get_settings
+
+    s = get_settings()
+    return (
+        int(s.chunk_min_chars),
+        int(s.chunk_max_chars),
+        int(s.chunk_overlap),
+    )

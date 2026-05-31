@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class HealthResponse(BaseModel):
@@ -8,10 +8,12 @@ class HealthResponse(BaseModel):
 class ChatRequest(BaseModel):
     """对话请求体：与前端 Chat 页对齐的最小字段集。"""
 
-    message: str = Field(min_length=1, max_length=8000)
+    message: str = Field(default="", max_length=8000)
     knowledge_base_id: str | None = None
     deep_research: bool = False
     web_search: bool = False
+    arxiv: bool = Field(default=False, description="启用 arXiv 学术检索")
+    semantic_scholar: bool = Field(default=False, description="启用 Semantic Scholar 检索")
     file_tools: bool = Field(
         default=False,
         description="启用本地文件读写工具（需服务端 file_tools_enabled）",
@@ -19,6 +21,10 @@ class ChatRequest(BaseModel):
     external_mcp: bool = Field(
         default=False,
         description="启用已配置的远程 URL 型外部 MCP 工具（需在工具页导入并开启）",
+    )
+    attachment_ids: list[str] = Field(
+        default_factory=list,
+        description="对话附件 id（先 POST /chat/attachments 上传）",
     )
     conversation_id: str | None = Field(
         default=None,
@@ -34,6 +40,12 @@ class ChatRequest(BaseModel):
             s = v.strip()
             return s if s else None
         return str(v).strip()
+
+    @model_validator(mode="after")
+    def _message_or_attachments(self) -> "ChatRequest":
+        if not (self.message or "").strip() and not self.attachment_ids:
+            raise ValueError("请输入消息或上传至少一个附件")
+        return self
 
 
 class ChatResponse(BaseModel):

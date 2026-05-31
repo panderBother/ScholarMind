@@ -10,6 +10,7 @@ import { getDocument, type DocumentDto } from "@/services/documents";
 import {
   deleteReport,
   downloadReportMarkdown,
+  downloadReportPdf,
   fetchReport,
   type ReportCitationDto,
   type ResearchReportDto,
@@ -27,6 +28,7 @@ export function ReportPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [openingCitation, setOpeningCitation] = useState(false);
   const [previewDoc, setPreviewDoc] = useState<DocumentDto | null>(null);
@@ -60,6 +62,18 @@ export function ReportPage() {
       setErr(e instanceof Error ? e.message : "导出失败");
     } finally {
       setExporting(false);
+    }
+  };
+
+  const onExportPdf = async () => {
+    if (!report) return;
+    setExportingPdf(true);
+    try {
+      await downloadReportPdf(report.id, report.title);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "PDF 导出失败");
+    } finally {
+      setExportingPdf(false);
     }
   };
 
@@ -263,7 +277,11 @@ export function ReportPage() {
             {tab === "answer" && (
               <div className="lg:hidden">
                 {report.raw_answer_md ? (
-                  <MarkdownPreview markdown={report.raw_answer_md} />
+                  <MarkdownPreview
+                    markdown={report.raw_answer_md}
+                    kbId={report.kb_id}
+                    citations={report.citations}
+                  />
                 ) : (
                   <p className="text-sm text-slate-500">无保存的原始回答。</p>
                 )}
@@ -271,7 +289,11 @@ export function ReportPage() {
             )}
 
             <section className={clsx(tab !== "report" && "max-lg:hidden")}>
-              <MarkdownPreview markdown={stripReportMarkdown(report.content_md)} />
+              <MarkdownPreview
+                markdown={stripReportMarkdown(report.content_md)}
+                kbId={report.kb_id}
+                citations={report.citations}
+              />
             </section>
 
             {tab === "report" && report.citations.length > 0 && (
@@ -302,11 +324,11 @@ export function ReportPage() {
               </button>
               <button
                 type="button"
-                disabled
-                title="PDF 导出将在后续版本提供"
-                className="flex-1 rounded-xl border border-slate-200 py-2.5 text-xs font-semibold text-slate-400"
+                disabled={exportingPdf}
+                onClick={() => void onExportPdf()}
+                className="flex-1 rounded-xl border border-slate-200 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
-                导出 PDF（即将推出）
+                {exportingPdf ? "导出中…" : "导出 PDF"}
               </button>
             </div>
           </article>

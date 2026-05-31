@@ -2,9 +2,7 @@
  * 对话 API：同步 `POST /api/v1/chat`；流式 `POST /api/v1/chat/stream`（SSE）。
  */
 
-import { getAccessToken } from "@/services/auth";
-
-const BASE = "/api/v1";
+import { apiFetch, parseApiError } from "@/services/http";
 
 export type ChatToolResult = {
   tool: string;
@@ -30,10 +28,13 @@ export type ChatRequestBody = {
   knowledge_base_id: string | null;
   deep_research: boolean;
   web_search: boolean;
+  arxiv?: boolean;
+  semantic_scholar?: boolean;
   /** 启用服务端本地文件读写（OpenAI tools） */
   file_tools?: boolean;
   /** 启用已导入且带 url 的远程外部 MCP */
   external_mcp?: boolean;
+  attachment_ids?: string[];
   /** 续聊时传入；不传则服务端新建会话并在 SSE 中返回 conversation_id */
   conversation_id?: string | null;
 };
@@ -73,36 +74,29 @@ export type ChatStreamHandlers = {
 };
 
 async function parseError(res: Response): Promise<string> {
-  try {
-    const j = (await res.json()) as { detail?: unknown };
-    const d = j.detail;
-    if (typeof d === "string") return d;
-    if (Array.isArray(d)) return d.map((x) => JSON.stringify(x)).join("; ");
-    return res.statusText;
-  } catch {
-    return res.statusText;
-  }
+  return parseApiError(res);
+}
+
+function chatBodyJson(body: ChatRequestBody): string {
+  return JSON.stringify({
+    message: body.message,
+    knowledge_base_id: body.knowledge_base_id,
+    deep_research: body.deep_research,
+    web_search: body.web_search,
+    arxiv: body.arxiv ?? false,
+    semantic_scholar: body.semantic_scholar ?? false,
+    file_tools: body.file_tools ?? false,
+    external_mcp: body.external_mcp ?? false,
+    attachment_ids: body.attachment_ids ?? [],
+    conversation_id: body.conversation_id ?? null,
+  });
 }
 
 export async function sendChatMessage(body: ChatRequestBody): Promise<ChatResponseBody> {
-  const token = getAccessToken();
-  const headers: HeadersInit = { "Content-Type": "application/json" };
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
-  const res = await fetch(`${BASE}/chat`, {
+  const res = await apiFetch("/chat", {
     method: "POST",
-    headers,
-    body: JSON.stringify({
-      message: body.message,
-      knowledge_base_id: body.knowledge_base_id,
-      deep_research: body.deep_research,
-      web_search: body.web_search,
-      file_tools: body.file_tools ?? false,
-      external_mcp: body.external_mcp ?? false,
-      conversation_id: body.conversation_id ?? null,
-    }),
+    headers: { "Content-Type": "application/json" },
+    body: chatBodyJson(body),
   });
 
   if (!res.ok) {
@@ -119,27 +113,13 @@ export async function streamChatMessage(
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
-  const token = getAccessToken();
-  const headers: HeadersInit = {
-    "Content-Type": "application/json",
-    Accept: "text/event-stream",
-  };
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
-  const res = await fetch(`${BASE}/chat/stream`, {
+  const res = await apiFetch("/chat/stream", {
     method: "POST",
-    headers,
-    body: JSON.stringify({
-      message: body.message,
-      knowledge_base_id: body.knowledge_base_id,
-      deep_research: body.deep_research,
-      web_search: body.web_search,
-      file_tools: body.file_tools ?? false,
-      external_mcp: body.external_mcp ?? false,
-      conversation_id: body.conversation_id ?? null,
-    }),
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
+    body: chatBodyJson(body),
     signal,
   });
 
@@ -240,8 +220,12 @@ export async function streamChatMessage(
     }
     if (msg.type === "done") {
       handlers.onDone();
+      return "done" as const;
     }
+    return null;
   };
+
+  let finished = false;
 
   try {
     while (true) {
@@ -252,16 +236,31 @@ export async function streamChatMessage(
       carry = parts.pop() ?? "";
       for (const line of parts) {
         if (line.startsWith("data:")) {
-          handleLine(line);
+          if (handleLine(line) === "done") {
+            finished = true;
+            break;
+          }
+        }
+      }
+      if (finished) break;
+    }
+    if (!finished && carry.trim()) {
+      for (const line of carry.split("\n")) {
+        if (line.startsWith("data:")) {
+          if (handleLine(line) === "done") {
+            finished = true;
+            break;
+          }
         }
       }
     }
-    if (carry.trim()) {
-      for (const line of carry.split("\n")) {
-        if (line.startsWith("data:")) handleLine(line);
-      }
+    if (!finished) {
+      handlers.onDone();
     }
   } finally {
+    if (finished) {
+      void reader.cancel().catch(() => undefined);
+    }
     reader.releaseLock();
   }
 }

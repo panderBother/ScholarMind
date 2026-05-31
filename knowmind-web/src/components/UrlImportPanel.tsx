@@ -1,10 +1,21 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { MarkdownPreview } from "@/components/MarkdownPreview";
 import { importUrlItem, previewUrlItem, type UrlImportPreviewDto } from "@/services/distill";
 
 export type UrlImportCategory = { id: string; label: string };
+
+function categoryDisplayName(label: string): string {
+  return label.replace(/^—+\s*/, "").trim();
+}
+
+/** 默认选中「未分类」，否则取列表第一项 */
+function pickDefaultCategoryId(categories: UrlImportCategory[]): string {
+  if (!categories.length) return "";
+  const uncategorized = categories.find((c) => categoryDisplayName(c.label) === "未分类");
+  return uncategorized?.id ?? categories[0].id;
+}
 
 type Props = {
   kbId: string;
@@ -16,12 +27,20 @@ type Props = {
 
 export function UrlImportPanel({ kbId, categories, onImported, layout = "inline" }: Props) {
   const [url, setUrl] = useState("");
-  const [categoryId, setCategoryId] = useState(categories[0]?.id ?? "");
+  const [categoryId, setCategoryId] = useState(() => pickDefaultCategoryId(categories));
   const [publish, setPublish] = useState(true);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [step, setStep] = useState<"form" | "preview">("form");
   const [preview, setPreview] = useState<UrlImportPreviewDto | null>(null);
+
+  /** 分类树异步加载完成后同步默认选中（避免界面显示「未分类」但 categoryId 仍为空） */
+  useEffect(() => {
+    setCategoryId((cur) => {
+      if (cur && categories.some((c) => c.id === cur)) return cur;
+      return pickDefaultCategoryId(categories);
+    });
+  }, [categories]);
 
   const normalizeUrl = (raw: string) => {
     let normalized = raw.trim();
@@ -34,8 +53,12 @@ export function UrlImportPanel({ kbId, categories, onImported, layout = "inline"
 
   const onPreview = async () => {
     const normalized = normalizeUrl(url);
-    if (!normalized || !categoryId) {
-      setErr("请填写 URL 并选择分类");
+    if (!normalized) {
+      setErr("请填写有效的网页 URL");
+      return;
+    }
+    if (!categoryId) {
+      setErr("请选择入库分类");
       return;
     }
     setLoading(true);
@@ -78,7 +101,7 @@ export function UrlImportPanel({ kbId, categories, onImported, layout = "inline"
   if (!categories.length) {
     return (
       <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
-        请先在条目视图中创建至少一个分类，再进行 URL 采集。
+        正在加载分类…若长时间无响应，请确认该知识库已初始化（每个库会自动创建「未分类」）。
       </p>
     );
   }

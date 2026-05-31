@@ -1,6 +1,5 @@
 import { getAccessToken } from "@/services/auth";
-
-const BASE = "/api/v1";
+import { apiFetch, parseApiError } from "@/services/http";
 
 export type DocumentDto = {
   id: string;
@@ -40,24 +39,10 @@ export type DocumentParsedContentDto = {
 export const SUPPORTED_UPLOAD_ACCEPT =
   ".pdf,.docx,.doc,.xlsx,.xls,.csv,.md,.markdown,.txt,.png,.jpg,.jpeg,.webp";
 
-function authHeaders(): HeadersInit {
-  const token = getAccessToken();
-  if (!token) throw new Error("未登录");
-  return { Authorization: `Bearer ${token}` };
-}
+const API = "/api/v1";
 
 async function parseError(res: Response): Promise<string> {
-  try {
-    const j = (await res.json()) as { detail?: unknown };
-    const d = j.detail;
-    if (typeof d === "string") return d;
-    if (d && typeof d === "object" && "message" in d) {
-      return String((d as { message: string }).message);
-    }
-    return res.statusText;
-  } catch {
-    return res.statusText;
-  }
+  return parseApiError(res);
 }
 
 async function parseXhrError(xhr: XMLHttpRequest): Promise<string> {
@@ -72,17 +57,14 @@ async function parseXhrError(xhr: XMLHttpRequest): Promise<string> {
 }
 
 export async function listDocuments(kbId: string): Promise<DocumentDto[]> {
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/documents`, {
-    headers: authHeaders(),
-  });
+  const res = await apiFetch(`/knowledge-bases/${kbId}/documents`);
   if (!res.ok) throw new Error(await parseError(res));
   return (await res.json()) as DocumentDto[];
 }
 
 export async function retryDocumentParse(kbId: string, docId: string): Promise<DocumentDto> {
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/documents/${docId}/retry-parse`, {
+  const res = await apiFetch(`/knowledge-bases/${kbId}/documents/${docId}/retry-parse`, {
     method: "POST",
-    headers: authHeaders(),
   });
   if (!res.ok) throw new Error(await parseError(res));
   return (await res.json()) as DocumentDto;
@@ -126,24 +108,19 @@ export function uploadDocumentsWithProgress(
     });
     xhr.addEventListener("error", () => reject(new Error("网络错误，上传失败")));
     xhr.addEventListener("abort", () => reject(new Error("上传已取消")));
-    xhr.open("POST", `${BASE}/knowledge-bases/${kbId}/documents`);
+    xhr.open("POST", `${API}/knowledge-bases/${kbId}/documents`);
     xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     xhr.send(fd);
   });
 }
 
 export async function deleteDocument(kbId: string, docId: string): Promise<void> {
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/documents/${docId}`, {
-    method: "DELETE",
-    headers: authHeaders(),
-  });
+  const res = await apiFetch(`/knowledge-bases/${kbId}/documents/${docId}`, { method: "DELETE" });
   if (!res.ok) throw new Error(await parseError(res));
 }
 
 export async function getDocument(kbId: string, docId: string): Promise<DocumentDto> {
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/documents/${docId}`, {
-    headers: authHeaders(),
-  });
+  const res = await apiFetch(`/knowledge-bases/${kbId}/documents/${docId}`);
   if (!res.ok) throw new Error(await parseError(res));
   return (await res.json()) as DocumentDto;
 }
@@ -152,9 +129,7 @@ export async function getDocumentParsedContent(
   kbId: string,
   docId: string,
 ): Promise<DocumentParsedContentDto> {
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/documents/${docId}/parsed-content`, {
-    headers: authHeaders(),
-  });
+  const res = await apiFetch(`/knowledge-bases/${kbId}/documents/${docId}/parsed-content`);
   if (!res.ok) throw new Error(await parseError(res));
   return (await res.json()) as DocumentParsedContentDto;
 }
@@ -164,9 +139,9 @@ export async function updateDocumentParsedContent(
   docId: string,
   body: { title?: string | null; summary?: string | null; content: string },
 ): Promise<DocumentParsedContentDto> {
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/documents/${docId}/parsed-content`, {
+  const res = await apiFetch(`/knowledge-bases/${kbId}/documents/${docId}/parsed-content`, {
     method: "PUT",
-    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(await parseError(res));
@@ -177,9 +152,8 @@ export async function confirmDocumentImport(
   kbId: string,
   docId: string,
 ): Promise<{ document: DocumentDto }> {
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/documents/${docId}/confirm-import`, {
+  const res = await apiFetch(`/knowledge-bases/${kbId}/documents/${docId}/confirm-import`, {
     method: "POST",
-    headers: authHeaders(),
   });
   if (!res.ok) throw new Error(await parseError(res));
   return (await res.json()) as { document: DocumentDto };
@@ -187,9 +161,7 @@ export async function confirmDocumentImport(
 
 /** 带鉴权拉取原始文件，用于 iframe / object 预览 */
 export async function fetchDocumentFileBlob(kbId: string, docId: string): Promise<Blob> {
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/documents/${docId}/file`, {
-    headers: authHeaders(),
-  });
+  const res = await apiFetch(`/knowledge-bases/${kbId}/documents/${docId}/file`);
   if (!res.ok) throw new Error(await parseError(res));
   return res.blob();
 }

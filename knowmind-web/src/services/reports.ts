@@ -1,6 +1,4 @@
-import { getAccessToken } from "@/services/auth";
-
-const BASE = "/api/v1";
+import { apiFetch, parseApiError } from "@/services/http";
 
 export type ReportCitationDto = {
   index: number;
@@ -41,34 +39,16 @@ export type ResearchReportDto = {
   updated_at: string;
 };
 
-function authHeaders(json = false): HeadersInit {
-  const token = getAccessToken();
-  if (!token) throw new Error("未登录");
-  const h: HeadersInit = { Authorization: `Bearer ${token}` };
-  if (json) h["Content-Type"] = "application/json";
-  return h;
-}
-
-async function parseError(res: Response): Promise<string> {
-  try {
-    const j = (await res.json()) as { detail?: unknown };
-    if (typeof j.detail === "string") return j.detail;
-    return res.statusText;
-  } catch {
-    return res.statusText;
-  }
-}
-
 export async function listReports(kbId?: string): Promise<ResearchReportListItemDto[]> {
   const q = kbId ? `?kb_id=${encodeURIComponent(kbId)}` : "";
-  const res = await fetch(`${BASE}/reports${q}`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await parseError(res));
+  const res = await apiFetch(`/reports${q}`);
+  if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as ResearchReportListItemDto[];
 }
 
 export async function fetchReport(reportId: string): Promise<ResearchReportDto> {
-  const res = await fetch(`${BASE}/reports/${encodeURIComponent(reportId)}`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await parseError(res));
+  const res = await apiFetch(`/reports/${encodeURIComponent(reportId)}`);
+  if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as ResearchReportDto;
 }
 
@@ -76,33 +56,38 @@ export async function generateReportFromConversation(
   conversationId: string,
   body: { kb_id: string; title?: string },
 ): Promise<ResearchReportDto> {
-  const res = await fetch(`${BASE}/conversations/${encodeURIComponent(conversationId)}/generate-report`, {
+  const res = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}/generate-report`, {
     method: "POST",
-    headers: authHeaders(true),
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await parseError(res));
+  if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as ResearchReportDto;
 }
 
-export async function downloadReportMarkdown(reportId: string, filename: string): Promise<void> {
-  const res = await fetch(`${BASE}/reports/${encodeURIComponent(reportId)}/export`, {
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await parseError(res));
+async function downloadBlob(path: string, filename: string): Promise<void> {
+  const res = await apiFetch(path);
+  if (!res.ok) throw new Error(await parseApiError(res));
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = filename.endsWith(".md") ? filename : `${filename}.md`;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
 }
 
+export async function downloadReportMarkdown(reportId: string, filename: string): Promise<void> {
+  const name = filename.endsWith(".md") ? filename : `${filename}.md`;
+  await downloadBlob(`/reports/${encodeURIComponent(reportId)}/export`, name);
+}
+
+export async function downloadReportPdf(reportId: string, filename: string): Promise<void> {
+  const name = filename.endsWith(".pdf") ? filename : `${filename}.pdf`;
+  await downloadBlob(`/reports/${encodeURIComponent(reportId)}/export.pdf`, name);
+}
+
 export async function deleteReport(reportId: string): Promise<void> {
-  const res = await fetch(`${BASE}/reports/${encodeURIComponent(reportId)}`, {
-    method: "DELETE",
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await parseError(res));
+  const res = await apiFetch(`/reports/${encodeURIComponent(reportId)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await parseApiError(res));
 }

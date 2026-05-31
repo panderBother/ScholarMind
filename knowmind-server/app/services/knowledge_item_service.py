@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.orm import Document, KnowledgeBase, KnowledgeCategory, KnowledgeItem, new_uuid
 from app.services import item_indexing
 from app.services.knowledge_category_service import KnowledgeCategoryError, ensure_default_category
+from app.utils.db_text import clamp_mediumtext
 
 
 class KnowledgeItemError(Exception):
@@ -111,22 +112,28 @@ async def create_item(
         published_at=now if publish else None,
     )
     session.add(item)
-    await session.commit()
+    await session.flush()
     await session.refresh(item)
 
     if publish and chunk_id:
-        first_id = await asyncio.to_thread(
-            item_indexing.index_text_item,
-            chunk_id=chunk_id,
-            kb_id=kb_id,
-            user_id=user_id,
-            item_id=item.id,
-            text=content,
-            lifecycle_status="published",
-        )
+        try:
+            first_id = await asyncio.to_thread(
+                item_indexing.index_text_item,
+                chunk_id=chunk_id,
+                kb_id=kb_id,
+                user_id=user_id,
+                item_id=item.id,
+                text=content,
+                title=title,
+                lifecycle_status="published",
+            )
+        except Exception as e:
+            await session.rollback()
+            raise KnowledgeItemError(f"发布失败：检索索引写入失败（{e!s}）", 502) from e
         if first_id:
             item.chunk_id = first_id
-            await session.commit()
+    await session.commit()
+    await session.refresh(item)
     return item
 
 
@@ -172,7 +179,7 @@ async def update_item(
     if content is not None and item.document_id:
         doc = await session.get(Document, item.document_id)
         if doc is not None:
-            doc.parsed_content = item.content[:500000]
+            doc.parsed_content = clamp_mediumtext(item.content)
             if title is not None:
                 doc.parsed_title = item.title[:512]
 
@@ -180,6 +187,80 @@ async def update_item(
     await session.refresh(item)
 
     if item.lifecycle_status == "published":
+        try:
+            if item.source_type == "document" and item.document_id:
+                first_id = await asyncio.to_thread(
+                    item_indexing.reindex_document_item,
+                    kb_id=kb_id,
+                    user_id=user_id,
+                    doc_id=item.document_id,
+                    item_id=item.id,
+                    text=item.content,
+                    title=item.title,
+                    lifecycle_status="published",
+                )
+            elif item.chunk_id:
+                first_id = await asyncio.to_thread(
+                    item_indexing.index_text_item,
+                    chunk_id=item.chunk_id,
+                    kb_id=kb_id,
+                    user_id=user_id,
+                    item_id=item.id,
+                    text=item.content,
+                    title=item.title,
+                    lifecycle_status="published",
+                    doc_id=item.document_id,
+                    page=item.page or 0,
+                )
+            else:
+                first_id = None
+        except Exception as e:
+            raise KnowledgeItemError(f"更新索引失败：{e!s}", 502) from e
+        if first_id and first_id != item.chunk_id:
+            item.chunk_id = first_id
+            await session.commit()
+            await session.refresh(item)
+    return item
+
+
+async def publish_item(session: AsyncSession, user_id: str, kb_id: str, item_id: str) -> KnowledgeItem:
+    item = await get_item(session, user_id, kb_id, item_id)
+    if not item.category_id:
+        default_cat = await ensure_default_category(session, user_id, kb_id)
+        item.category_id = default_cat.id
+    if not item.chunk_id:
+        item.chunk_id = new_uuid()
+    item.lifecycle_status = "published"
+    item.published_at = datetime.now(UTC)
+    await session.flush()
+    await _write_search_index(session, item, kb_id=kb_id, user_id=user_id)
+    await session.commit()
+    await session.refresh(item)
+    return item
+
+
+async def reindex_item(session: AsyncSession, user_id: str, kb_id: str, item_id: str) -> KnowledgeItem:
+    """已发布条目重建向量/全文索引（修复「已发布但检索不到」）。"""
+    item = await get_item(session, user_id, kb_id, item_id)
+    if item.lifecycle_status != "published":
+        raise KnowledgeItemError("仅已发布条目可重建索引", 400)
+    if not item.chunk_id:
+        item.chunk_id = new_uuid()
+    await session.flush()
+    await _write_search_index(session, item, kb_id=kb_id, user_id=user_id)
+    await session.commit()
+    await session.refresh(item)
+    return item
+
+
+async def _write_search_index(
+    session: AsyncSession,
+    item: KnowledgeItem,
+    *,
+    kb_id: str,
+    user_id: str,
+) -> None:
+    try:
         if item.source_type == "document" and item.document_id:
             first_id = await asyncio.to_thread(
                 item_indexing.reindex_document_item,
@@ -188,77 +269,35 @@ async def update_item(
                 doc_id=item.document_id,
                 item_id=item.id,
                 text=item.content,
+                title=item.title,
                 lifecycle_status="published",
             )
-            if first_id:
-                item.chunk_id = first_id
-                await session.commit()
-        elif item.chunk_id:
+        else:
+            chunk_id = item.chunk_id or new_uuid()
             first_id = await asyncio.to_thread(
                 item_indexing.index_text_item,
-                chunk_id=item.chunk_id,
+                chunk_id=chunk_id,
                 kb_id=kb_id,
                 user_id=user_id,
                 item_id=item.id,
                 text=item.content,
+                title=item.title,
                 lifecycle_status="published",
                 doc_id=item.document_id,
                 page=item.page or 0,
             )
-            if first_id and first_id != item.chunk_id:
-                item.chunk_id = first_id
-                await session.commit()
-    return item
-
-
-async def publish_item(session: AsyncSession, user_id: str, kb_id: str, item_id: str) -> KnowledgeItem:
-    item = await get_item(session, user_id, kb_id, item_id)
-    if item.lifecycle_status == "published":
-        return item
-    if not item.category_id:
-        default_cat = await ensure_default_category(session, user_id, kb_id)
-        item.category_id = default_cat.id
-    if not item.chunk_id:
-        item.chunk_id = new_uuid()
-    item.lifecycle_status = "published"
-    item.published_at = datetime.now(UTC)
-    await session.commit()
-    await session.refresh(item)
-    if item.source_type == "document" and item.document_id:
-        first_id = await asyncio.to_thread(
-            item_indexing.reindex_document_item,
-            kb_id=kb_id,
-            user_id=user_id,
-            doc_id=item.document_id,
-            item_id=item.id,
-            text=item.content,
-            lifecycle_status="published",
-        )
-        if first_id:
-            item.chunk_id = first_id
-            await session.commit()
-    else:
-        first_id = await asyncio.to_thread(
-            item_indexing.index_text_item,
-            chunk_id=item.chunk_id,
-            kb_id=kb_id,
-            user_id=user_id,
-            item_id=item.id,
-            text=item.content,
-            lifecycle_status="published",
-            doc_id=item.document_id,
-            page=item.page or 0,
-        )
-        if first_id:
-            item.chunk_id = first_id
-            await session.commit()
-    return item
+    except Exception as e:
+        await session.rollback()
+        raise KnowledgeItemError(f"检索索引写入失败（{e!s}）", 502) from e
+    if first_id:
+        item.chunk_id = first_id
 
 
 async def archive_item(session: AsyncSession, user_id: str, kb_id: str, item_id: str) -> KnowledgeItem:
     item = await get_item(session, user_id, kb_id, item_id)
     item.lifecycle_status = "archived"
     await session.commit()
+    await session.refresh(item)
     if item.document_id:
         await asyncio.to_thread(item_indexing.remove_index_for_document, item.document_id)
     elif item.chunk_id:
@@ -276,7 +315,7 @@ async def delete_item(session: AsyncSession, user_id: str, kb_id: str, item_id: 
         return
 
     chunk_id = item.chunk_id
+    item_pk = item.id
     await session.delete(item)
     await session.commit()
-    if chunk_id:
-        await asyncio.to_thread(item_indexing.remove_index_chunk, chunk_id)
+    await asyncio.to_thread(item_indexing.remove_index_for_item, item_pk, chunk_id=chunk_id)

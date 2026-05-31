@@ -17,17 +17,19 @@ import {
   Sparkles,
   SquarePen,
   Trash2,
+  X,
 } from "lucide-react";
 import { AssistantMarkdown } from "@/components/AssistantMarkdown";
-import { RequestTracePanel, shouldShowTraceStep, upsertTraceStep, type TraceStepRow } from "@/components/RequestTracePanel";
 import { useUi } from "@/components/ui/UiProvider";
 import { getAccessToken } from "@/services/auth";
 import { ChatRagSources } from "@/components/ChatRagSources";
-import { streamChatMessage, type AgentStepEvent, type ChatToolResult, type RagSourceDto } from "@/services/chat";
+import { streamChatMessage, type ChatToolResult, type RagSourceDto } from "@/services/chat";
+import { uploadChatAttachment, type ChatAttachmentDto } from "@/services/chatAttachments";
 import {
   type ConversationDto,
   fetchConversation,
   fetchConversationMessages,
+  formatConversationLabel,
   getStoredConversationId,
   listConversations,
   deleteConversation,
@@ -35,6 +37,7 @@ import {
   setStoredConversationId,
 } from "@/services/conversations";
 import {
+  fetchMcpTools,
   setBuiltinMcpEnabled,
 } from "@/services/mcpTools";
 import { listKnowledgeBases, type KnowledgeBaseDto } from "@/services/knowledgeBases";
@@ -56,6 +59,8 @@ type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  /** 用户消息内联图片（blob URL，仅当前会话展示） */
+  images?: string[];
   trace_id?: string;
   streamFinal?: boolean;
   thinkingContent?: string;
@@ -82,15 +87,41 @@ function summarizeToolResult(payload: ChatToolResult): string {
   return payload.ok ? "完成" : "失败";
 }
 
+type PendingAttachment = ChatAttachmentDto & { previewUrl?: string };
+
+const IMAGE_TYPES = new Set(["image", "png", "jpg", "jpeg", "webp", "gif"]);
+
+function isImageAttachment(att: { file_type: string; filename: string }) {
+  return (
+    att.file_type === "image" ||
+    IMAGE_TYPES.has(att.file_type) ||
+    /\.(png|jpe?g|webp|gif)$/i.test(att.filename)
+  );
+}
+
+function revokeMessageImages(msgs: ChatMessage[]) {
+  for (const m of msgs) {
+    m.images?.forEach((url) => URL.revokeObjectURL(url));
+  }
+}
+
 type LeftRailTab = "sessions" | "knowledge";
 
-function formatConversationLabel(c: ConversationDto): string {
-  if (c.title && c.title.trim()) return c.title.trim();
+const EXTERNAL_MCP_STORAGE_KEY = "knowmind_external_mcp";
+
+function readExternalMcpPreference(): boolean {
   try {
-    const d = new Date(c.updated_at);
-    return `会话 ${d.toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+    return localStorage.getItem(EXTERNAL_MCP_STORAGE_KEY) === "true";
   } catch {
-    return `会话 ${c.id.slice(0, 8)}`;
+    return false;
+  }
+}
+
+function writeExternalMcpPreference(on: boolean): void {
+  try {
+    localStorage.setItem(EXTERNAL_MCP_STORAGE_KEY, on ? "true" : "false");
+  } catch {
+    /* private mode 等 */
   }
 }
 
@@ -102,7 +133,6 @@ export function ChatPage() {
   const { confirm, prompt, message } = useUi();
   const bottomRef = useRef<HTMLDivElement>(null);
   const leftPanelRef = useRef<ImperativePanelHandle>(null);
-  const rightPanelRef = useRef<ImperativePanelHandle>(null);
 
   const [kbs, setKbs] = useState<KnowledgeBaseDto[]>([]);
   const [kbId, setKbId] = useState<string>("");
@@ -110,8 +140,13 @@ export function ChatPage() {
   const [input, setInput] = useState("");
   const [deepResearch, setDeepResearch] = useState(true);
   const [webSearch, setWebSearch] = useState(false);
+  const [arxiv, setArxiv] = useState(false);
+  const [semanticScholar, setSemanticScholar] = useState(false);
   const [fileTools, setFileTools] = useState(false);
-  const [externalMcp, setExternalMcp] = useState(false);
+  const [externalMcp, setExternalMcp] = useState(readExternalMcpPreference);
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [showThought, setShowThought] = useState(true);
@@ -119,7 +154,6 @@ export function ChatPage() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [hydrating, setHydrating] = useState(() => !!(getAccessToken() && getStoredConversationId()));
   const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const [rightCollapsed, setRightCollapsed] = useState(false);
   const [conversations, setConversations] = useState<ConversationDto[]>([]);
   const [loadingConvList, setLoadingConvList] = useState(false);
   const [switchingConv, setSwitchingConv] = useState(false);
@@ -129,26 +163,20 @@ export function ChatPage() {
   const lastUserQueryRef = useRef("");
   const [extracting, setExtracting] = useState(false);
   const [generatingReport, setGeneratingReport] = useState(false);
-  const [traceSteps, setTraceSteps] = useState<TraceStepRow[]>([]);
-  const [activeTraceId, setActiveTraceId] = useState<string | null>(null);
 
   const kbName = useMemo(() => kbs.find((k) => k.id === kbId)?.name ?? "选择知识库", [kbs, kbId]);
 
-  const pushTraceStep = useCallback((ev: AgentStepEvent) => {
-    if (!shouldShowTraceStep(ev)) return;
-    setTraceSteps((prev) => upsertTraceStep(prev, ev));
-  }, []);
-
-  const lastTraceId = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant" && messages[i].trace_id) {
-        return messages[i].trace_id;
-      }
-    }
-    return null;
-  }, [messages]);
-
-  const displayTraceId = activeTraceId ?? lastTraceId;
+  /** 仅在首字/首段推理尚未返回时展示底部等待条，避免回答完成后仍挂着「正在等待回复」 */
+  const awaitingFirstToken = useMemo(() => {
+    if (!loading) return false;
+    const last = messages[messages.length - 1];
+    return (
+      last?.role === "assistant" &&
+      !(last.streamFinal ?? true) &&
+      !String(last.content ?? "").trim() &&
+      !String(last.thinkingContent ?? "").trim()
+    );
+  }, [loading, messages]);
 
   const loadKbs = useCallback(async () => {
     if (!getAccessToken()) {
@@ -182,6 +210,24 @@ export function ChatPage() {
   }, []);
 
   useEffect(() => {
+    if (!getAccessToken()) return;
+    void fetchMcpTools()
+      .then(({ custom }) => {
+        const hasEnabledUrl = custom.some((t) => t.enabled && (t.config.url || "").trim());
+        if (!hasEnabledUrl) return;
+        try {
+          if (localStorage.getItem(EXTERNAL_MCP_STORAGE_KEY) === null) {
+            setExternalMcp(true);
+            writeExternalMcpPreference(true);
+          }
+        } catch {
+          setExternalMcp(true);
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
     if (getAccessToken()) void loadConversationList();
   }, [loadConversationList]);
 
@@ -191,15 +237,16 @@ export function ChatPage() {
     if (conv.knowledge_base_id) setKbId(conv.knowledge_base_id);
     setDeepResearch(conv.deep_research);
     setWebSearch(conv.web_search);
-    setMessages(
-      msgs.map((m) => ({
+    setMessages((prev) => {
+      revokeMessageImages(prev);
+      return msgs.map((m) => ({
         id: m.id,
         role: m.role === "assistant" ? "assistant" : "user",
         content: m.content,
         trace_id: m.trace_id ?? undefined,
         streamFinal: true,
-      })),
-    );
+      }));
+    });
   }, []);
 
   /** 刷新后：从 localStorage 的会话 id 拉取消息（后端已持久化） */
@@ -326,15 +373,24 @@ export function ChatPage() {
   };
 
   const handleSend = async () => {
-    const text = input.trim();
-    if (!text || loading || hydrating || switchingConv) return;
+    const trimmed = input.trim();
+    const hasAttachments = pendingAttachments.length > 0;
+    if ((!trimmed && !hasAttachments) || loading || hydrating || switchingConv) return;
+    const text = trimmed || "请描述并分析我上传的附件内容。";
+    const attachmentsToSend = pendingAttachments;
+    const sentAttachmentIds = attachmentsToSend.map((a) => a.id);
+    const sentImages = attachmentsToSend
+      .filter((a) => isImageAttachment(a) && a.previewUrl)
+      .map((a) => a.previewUrl as string);
     setErr(null);
     lastUserQueryRef.current = text;
     setInput("");
+    setPendingAttachments([]);
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
-      content: text,
+      content: trimmed,
+      images: sentImages.length > 0 ? sentImages : undefined,
     };
     const assistantId = crypto.randomUUID();
     const assistantPlaceholder: ChatMessage = {
@@ -344,8 +400,6 @@ export function ChatPage() {
       streamFinal: false,
     };
     setMessages((m) => [...m, userMsg, assistantPlaceholder]);
-    setTraceSteps([]);
-    setActiveTraceId(null);
     setLoading(true);
     let acc = "";
     let thinkingAcc = "";
@@ -357,13 +411,15 @@ export function ChatPage() {
           knowledge_base_id: kbId || null,
           deep_research: deepResearch,
           web_search: webSearch,
+          arxiv: arxiv || deepResearch,
+          semantic_scholar: semanticScholar || deepResearch,
           file_tools: fileTools,
           external_mcp: externalMcp,
+          attachment_ids: sentAttachmentIds,
           conversation_id: conversationId,
         },
         {
           onTraceId: (traceId) => {
-            setActiveTraceId(traceId);
             setMessages((m) =>
               m.map((row) => (row.id === assistantId ? { ...row, trace_id: traceId } : row)),
             );
@@ -371,9 +427,6 @@ export function ChatPage() {
           onConversationId: (cid) => {
             setConversationId(cid);
             setStoredConversationId(cid);
-          },
-          onAgentStep: (payload) => {
-            pushTraceStep(payload);
           },
           onThinkingDelta: (chunk) => {
             thinkingAcc += chunk;
@@ -400,11 +453,6 @@ export function ChatPage() {
             );
           },
           onToolResult: (payload) => {
-            pushTraceStep({
-              step: "tool_call",
-              status: payload.ok ? "done" : "error",
-              detail: `${payload.tool} · ${summarizeToolResult(payload)}`,
-            });
             if (!payload.ok) return;
             const log: FileToolLog = {
               tool: payload.tool,
@@ -428,7 +476,6 @@ export function ChatPage() {
           },
           onError: (msg) => {
             streamFailed = true;
-            pushTraceStep({ step: "error", status: "error", detail: msg });
             setErr(msg);
             const { thinking: tagThinking } = partitionThinkingBlocks(acc);
             const thinkingContent = mergeThinkingParts(thinkingAcc, tagThinking);
@@ -457,6 +504,7 @@ export function ChatPage() {
                 ),
               );
             }
+            setLoading(false);
           },
         },
       );
@@ -474,12 +522,20 @@ export function ChatPage() {
       );
     } finally {
       setLoading(false);
+      attachmentsToSend.forEach((a) => {
+        if (a.previewUrl && !sentImages.includes(a.previewUrl)) {
+          URL.revokeObjectURL(a.previewUrl);
+        }
+      });
       void loadConversationList();
     }
   };
 
   const newChat = () => {
-    setMessages([]);
+    setMessages((prev) => {
+      revokeMessageImages(prev);
+      return [];
+    });
     setErr(null);
     setInput("");
     setConversationId(null);
@@ -541,22 +597,6 @@ export function ChatPage() {
   const appendPrompt = (t: string) => {
     setInput((prev) => (prev ? `${prev}\n${t}` : t));
   };
-
-  const knowledgeGraphPlaceholder = (
-    <div className="border-t border-slate-100 p-3">
-      <div className="mb-2 text-xs font-semibold text-slate-500">知识图谱（示意）</div>
-      <div className="relative h-36 rounded-lg bg-slate-50 p-2 text-[10px] text-slate-500">
-        <div className="absolute left-6 top-6 rounded-md bg-white px-2 py-1 shadow">实体 A</div>
-        <div className="absolute right-8 top-10 rounded-md bg-white px-2 py-1 shadow">实体 B</div>
-        <div className="absolute bottom-8 left-10 rounded-md bg-primary-soft px-2 py-1 text-primary shadow">
-          关系
-        </div>
-        <svg className="pointer-events-none absolute inset-0 h-full w-full">
-          <line x1="40" y1="40" x2="120" y2="50" stroke="#CBD5E1" strokeWidth="1" />
-        </svg>
-      </div>
-    </div>
-  );
 
   const leftAside = (
     <aside className="flex h-full min-h-0 flex-col border-slate-200 bg-white lg:border-r">
@@ -743,53 +783,11 @@ export function ChatPage() {
                       ))
                     )}
                   </ul>
-                  {knowledgeGraphPlaceholder}
                 </div>
               </div>
             )}
           </div>
         </>
-      ) : null}
-    </aside>
-  );
-
-  const rightAside = (
-    <aside className="flex h-full min-h-0 flex-col border-slate-200 bg-white lg:border-l">
-      <div className="flex items-center gap-1 border-b border-slate-100 p-2">
-        {!rightCollapsed ? (
-          <>
-            <button
-              type="button"
-              onClick={() => rightPanelRef.current?.collapse()}
-              className="shrink-0 rounded-md p-1.5 text-slate-500 hover:bg-slate-100"
-              title="收起追踪栏"
-              aria-label="收起请求追踪侧栏"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
-            <span className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wide text-slate-400">
-              请求追踪
-            </span>
-          </>
-        ) : (
-          <button
-            type="button"
-            onClick={() => rightPanelRef.current?.expand()}
-            className="mx-auto rounded-md p-1.5 text-slate-500 hover:bg-slate-100"
-            title="展开追踪"
-            aria-label="展开请求追踪侧栏"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </button>
-        )}
-      </div>
-      {!rightCollapsed ? (
-        <RequestTracePanel
-          traceId={displayTraceId}
-          kbName={kbName}
-          steps={traceSteps}
-          loading={loading}
-        />
       ) : null}
     </aside>
   );
@@ -909,9 +907,21 @@ export function ChatPage() {
           m.role === "user" ? (
             <div
               key={m.id}
-              className="ml-auto max-w-[90%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-sm text-white shadow lg:max-w-3xl lg:rounded-2xl lg:py-3"
+              className="ml-auto max-w-[90%] rounded-2xl rounded-br-md bg-primary px-3 py-2.5 text-sm text-white shadow lg:max-w-md lg:rounded-2xl lg:py-3"
             >
-              <p className="whitespace-pre-wrap break-words">{m.content}</p>
+              {m.images?.length ? (
+                <div className={`flex flex-col gap-2 ${m.content ? "mb-2" : ""}`}>
+                  {m.images.map((url) => (
+                    <img
+                      key={url}
+                      src={url}
+                      alt=""
+                      className="max-h-80 max-w-full rounded-xl object-contain"
+                    />
+                  ))}
+                </div>
+              ) : null}
+              {m.content ? <p className="whitespace-pre-wrap break-words">{m.content}</p> : null}
             </div>
           ) : (
             <div
@@ -986,7 +996,12 @@ export function ChatPage() {
                     ))}
                 </ul>
               ) : null}
-              <AssistantMarkdown markdown={m.content} isStreaming={!(m.streamFinal ?? true)} />
+              <AssistantMarkdown
+                markdown={m.content}
+                isStreaming={!(m.streamFinal ?? true)}
+                kbId={m.ragKbId}
+                citations={m.ragSources}
+              />
               {(m.streamFinal ?? true) && m.content ? (
                 <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-2">
                   <button
@@ -1002,7 +1017,7 @@ export function ChatPage() {
           ),
         )}
 
-        {loading ? (
+        {awaitingFirstToken ? (
           <div className="flex items-center gap-2 text-sm text-slate-500">
             <Loader2 className="h-4 w-4 animate-spin text-primary" />
             正在等待回复…
@@ -1043,6 +1058,47 @@ export function ChatPage() {
 
       <footer className="shrink-0 border-t border-slate-200 bg-white px-2 py-2 lg:p-4">
         <div className="mx-auto max-w-4xl overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-sm lg:rounded-xl">
+          {pendingAttachments.length > 0 ? (
+            <div className="flex flex-wrap gap-2 border-b border-slate-100 px-3 py-2">
+              {pendingAttachments.map((att) => {
+                const isImage = isImageAttachment(att);
+                return (
+                  <div
+                    key={att.id}
+                    className={`relative shrink-0 rounded-lg border border-slate-200 bg-slate-50 ${
+                      isImage && att.previewUrl ? "p-0.5" : "flex items-center gap-2 px-2 py-1.5 text-xs text-slate-700"
+                    }`}
+                  >
+                    {isImage && att.previewUrl ? (
+                      <img
+                        src={att.previewUrl}
+                        alt=""
+                        className="h-16 w-16 rounded-md object-cover"
+                      />
+                    ) : (
+                      <span className="max-w-[8rem] truncate">附件</span>
+                    )}
+                    <button
+                      type="button"
+                      className={`absolute rounded-full bg-slate-900/55 p-0.5 text-white hover:bg-slate-900/75 ${
+                        isImage && att.previewUrl ? "-right-1.5 -top-1.5" : "relative ml-1 shrink-0 bg-transparent text-slate-400 hover:text-slate-600"
+                      }`}
+                      aria-label="移除附件"
+                      onClick={() => {
+                        setPendingAttachments((list) => {
+                          const row = list.find((x) => x.id === att.id);
+                          if (row?.previewUrl) URL.revokeObjectURL(row.previewUrl);
+                          return list.filter((x) => x.id !== att.id);
+                        });
+                      }}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
           <textarea
             rows={2}
             value={input}
@@ -1055,19 +1111,68 @@ export function ChatPage() {
             }}
             disabled={loading || hydrating || switchingConv}
             className="max-h-32 min-h-[40px] w-full resize-none border-0 bg-transparent px-3 pb-2 pt-3 text-[15px] leading-5 text-slate-900 outline-none ring-0 placeholder:text-slate-400 focus:ring-0 disabled:opacity-60 lg:min-h-[72px] lg:px-4 lg:pb-3 lg:pt-3 lg:text-sm"
-            placeholder="输入问题…（Enter 发送，Shift+Enter 换行）"
+            placeholder="输入问题，或点击 + 上传图片 / PDF / 文档…（Enter 发送）"
           />
           <div className="flex items-center gap-2 border-t border-slate-100 bg-slate-50/95 px-2 py-2 lg:gap-3 lg:px-3 lg:py-2.5">
+            <input
+              ref={attachmentInputRef}
+              type="file"
+              className="hidden"
+              accept=".pdf,.txt,.md,.markdown,.png,.jpg,.jpeg,.webp,.docx,.csv"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (!file) return;
+                setUploadingAttachment(true);
+                void uploadChatAttachment(file)
+                  .then((att) => {
+                    const isImage = file.type.startsWith("image/");
+                    const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
+                    setPendingAttachments((list) => [...list, { ...att, previewUrl }]);
+                    message.success(`已添加附件：${att.filename}`);
+                  })
+                  .catch((err) => message.error(err instanceof Error ? err.message : "上传失败"))
+                  .finally(() => setUploadingAttachment(false));
+              }}
+            />
             <button
               type="button"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 opacity-50"
-              aria-label="附件（未接入）"
-              disabled
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 hover:border-primary/40 disabled:opacity-50"
+              aria-label="添加图片或附件"
+              disabled={uploadingAttachment || loading}
+              onClick={() => attachmentInputRef.current?.click()}
             >
-              <Plus className="h-4 w-4" strokeWidth={2.25} />
+              {uploadingAttachment ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" strokeWidth={2.25} />}
             </button>
             <div className="scrollbar-none flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              <Toggle label="深度研究" on={deepResearch} onToggle={() => setDeepResearch((v) => !v)} />
+              <Toggle label="深度研究" on={deepResearch} onToggle={() => {
+                const next = !deepResearch;
+                setDeepResearch(next);
+                if (next) {
+                  setArxiv(true);
+                  setSemanticScholar(true);
+                  void setBuiltinMcpEnabled("arxiv", true).catch(() => undefined);
+                  void setBuiltinMcpEnabled("semantic_scholar", true).catch(() => undefined);
+                }
+              }} />
+              <Toggle
+                label="arXiv"
+                on={arxiv || deepResearch}
+                onToggle={() => {
+                  const next = !(arxiv || deepResearch);
+                  setArxiv(next);
+                  void setBuiltinMcpEnabled("arxiv", next).catch(() => undefined);
+                }}
+              />
+              <Toggle
+                label="S2 学术"
+                on={semanticScholar || deepResearch}
+                onToggle={() => {
+                  const next = !(semanticScholar || deepResearch);
+                  setSemanticScholar(next);
+                  void setBuiltinMcpEnabled("semantic_scholar", next).catch(() => undefined);
+                }}
+              />
               <Toggle
                 label="联网搜索"
                 on={webSearch}
@@ -1089,12 +1194,18 @@ export function ChatPage() {
               <Toggle
                 label="外部 MCP"
                 on={externalMcp}
-                onToggle={() => setExternalMcp((v) => !v)}
+                onToggle={() => {
+                  setExternalMcp((v) => {
+                    const next = !v;
+                    writeExternalMcpPreference(next);
+                    return next;
+                  });
+                }}
               />
             </div>
             <button
               type="button"
-              disabled={loading || hydrating || switchingConv || !input.trim()}
+              disabled={loading || hydrating || switchingConv || (!input.trim() && pendingAttachments.length === 0)}
               onClick={() => void handleSend()}
               className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-primary-hover active:scale-[0.98] disabled:opacity-50 lg:rounded-lg lg:px-4 lg:text-sm"
             >
@@ -1138,24 +1249,8 @@ export function ChatPage() {
           <PanelResizeHandle className={resizeHandleClass}>
             <GripVertical className="h-5 w-5 text-slate-400 opacity-60 group-hover:opacity-100" aria-hidden />
           </PanelResizeHandle>
-          <Panel defaultSize={56} minSize={38} className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+          <Panel defaultSize={78} minSize={50} className="flex min-h-0 min-w-0 flex-col overflow-hidden">
             {mainSection}
-          </Panel>
-          <PanelResizeHandle className={resizeHandleClass}>
-            <GripVertical className="h-5 w-5 text-slate-400 opacity-60 group-hover:opacity-100" aria-hidden />
-          </PanelResizeHandle>
-          <Panel
-            ref={rightPanelRef}
-            collapsible
-            collapsedSize={4}
-            defaultSize={22}
-            minSize={14}
-            maxSize={34}
-            className="flex min-h-0 min-w-0 flex-col"
-            onCollapse={() => setRightCollapsed(true)}
-            onExpand={() => setRightCollapsed(false)}
-          >
-            {rightAside}
           </Panel>
         </PanelGroup>
       </div>

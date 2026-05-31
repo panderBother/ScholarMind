@@ -2,7 +2,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.orm import KnowledgeBase, new_uuid
+from app.models.orm import KnowledgeBase, KnowledgeItem, new_uuid
 
 
 class KnowledgeBaseError(Exception):
@@ -26,6 +26,23 @@ async def list_knowledge_bases(session: AsyncSession, user_id: str) -> list[Know
     )
     r = await session.execute(q)
     return list(r.scalars().all())
+
+
+async def count_items_by_kb_ids(session: AsyncSession, kb_ids: list[str]) -> dict[str, int]:
+    if not kb_ids:
+        return {}
+    q = (
+        select(KnowledgeItem.kb_id, func.count())
+        .where(KnowledgeItem.kb_id.in_(kb_ids), KnowledgeItem.lifecycle_status != "archived")
+        .group_by(KnowledgeItem.kb_id)
+    )
+    r = await session.execute(q)
+    return {str(kb_id): int(n) for kb_id, n in r.all()}
+
+
+async def count_items_for_kb(session: AsyncSession, kb_id: str) -> int:
+    counts = await count_items_by_kb_ids(session, [kb_id])
+    return counts.get(kb_id, 0)
 
 
 async def create_knowledge_base(session: AsyncSession, user_id: str, name: str) -> KnowledgeBase:

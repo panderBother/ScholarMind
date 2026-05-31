@@ -1,7 +1,4 @@
-import { getAccessToken } from "@/services/auth";
-
-const BASE = "/api/v1";
-
+import { apiFetch, parseApiError } from "@/services/http";
 export type SearchHitDto = {
   item_id: string;
   title: string;
@@ -18,23 +15,6 @@ export type SearchResultDto = {
   items: SearchHitDto[];
 };
 
-function authHeaders(): HeadersInit {
-  const token = getAccessToken();
-  if (!token) throw new Error("未登录");
-  return { Authorization: `Bearer ${token}` };
-}
-
-async function parseError(res: Response): Promise<string> {
-  try {
-    const j = (await res.json()) as { detail?: unknown };
-    const d = j.detail;
-    if (typeof d === "string") return d;
-    return res.statusText;
-  } catch {
-    return res.statusText;
-  }
-}
-
 export async function searchKnowledgeBase(
   kbId: string,
   params: {
@@ -50,9 +30,8 @@ export async function searchKnowledgeBase(
   if (params.categoryId) sp.set("category_id", params.categoryId);
   if (params.tags?.length) sp.set("tags", params.tags.join(","));
 
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/search?${sp}`, {
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await parseError(res));
+  const res = await apiFetch(`/knowledge-bases/${kbId}/search?${sp}`, {
+    });
+  if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as SearchResultDto;
 }

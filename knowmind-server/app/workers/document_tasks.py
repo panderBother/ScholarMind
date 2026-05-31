@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.db.sync_session import session_scope
-from app.ingest.chunking import semantic_chunk_pages, semantic_chunk_text
+from app.ingest.chunking import chunk_settings_from_config, semantic_chunk_pages, semantic_chunk_text
 from app.ingest.embedding import embed_texts
 from app.ingest.registry import parse_file
 from app.ingest.types import FileType, PageText
@@ -18,6 +18,7 @@ from app.models.orm import Document, KnowledgeBase, KnowledgeItem, new_uuid
 from app.services.item_indexing import build_index_row, remove_index_for_document
 from app.services.knowledge_category_service import get_or_create_default_category_sync
 from app.storage.local import LocalBlobStorage
+from app.utils.db_text import clamp_mediumtext
 from app.workers.celery_app import celery_app
 
 log = logging.getLogger(__name__)
@@ -108,9 +109,20 @@ def _semantic_index_chunks(
     full_text: str,
     pages: list[PageText],
 ) -> list:
+    min_chars, max_chars, overlap = chunk_settings_from_config()
     if pages and len(pages) > 1:
-        return semantic_chunk_pages(pages)
-    return semantic_chunk_text(full_text)
+        return semantic_chunk_pages(
+            pages,
+            max_chars=max_chars,
+            min_chars=min_chars,
+            overlap=overlap,
+        )
+    return semantic_chunk_text(
+        full_text,
+        max_chars=max_chars,
+        min_chars=min_chars,
+        overlap=overlap,
+    )
 
 
 def _embed_with_progress(document_id: str, texts: list[str]) -> list[list[float]]:
@@ -227,7 +239,7 @@ def process_document_once(document_id: str) -> bool:
         category_id=default_category_id,
         source_type="document",
         title=base_name[:200],
-        content=full_text[:500000],
+        content=clamp_mediumtext(full_text) or full_text[:8000],
         summary=(parsed_title or parse_title or base_name)[:500] if (parsed_title or parse_title) else None,
         lifecycle_status="published",
         access_level="internal",
@@ -258,7 +270,7 @@ def process_document_once(document_id: str) -> bool:
         if title:
             doc.title = title
         if parsed_content is None or not (doc.parsed_content or "").strip():
-            doc.parsed_content = full_text[:500000]
+            doc.parsed_content = clamp_mediumtext(full_text)
         if parsed_title is None and title:
             doc.parsed_title = title[:512]
         s.add(item_record)

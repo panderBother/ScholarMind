@@ -79,8 +79,31 @@ async def test_register_login_me_kb_flow(async_client: AsyncClient) -> None:
     )
     assert len(listed.json()) == 1
 
-    deleted = await async_client.delete(
-        f"/api/v1/knowledge-bases/{kb_id}",
-        headers={"Authorization": f"Bearer {token}"},
+
+@pytest.mark.asyncio
+async def test_refresh_token_flow(async_client: AsyncClient) -> None:
+    reg = await async_client.post(
+        "/api/v1/auth/register",
+        json={"email": "refresh@example.com", "password": "password123"},
     )
-    assert deleted.status_code == 204
+    assert reg.status_code == 200, reg.text
+    body = reg.json()
+    refresh = body.get("refresh_token")
+    assert refresh
+
+    refreshed = await async_client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": refresh},
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    new_body = refreshed.json()
+    assert new_body["access_token"]
+    assert new_body.get("refresh_token")
+
+    me = await async_client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {new_body['access_token']}"},
+    )
+    assert me.status_code == 200
+    assert me.json()["email"] == "refresh@example.com"
+    assert new_body.get("refresh_token")

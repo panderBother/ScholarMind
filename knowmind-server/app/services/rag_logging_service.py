@@ -23,12 +23,32 @@ class RagSearchResult:
     hits: list[RagHit]
     avg_score: float
     top_item_ids: list[str]
+    candidate_count: int = 0
+    top_candidate_score: float = 0.0
 
 
 def distance_to_score(distance: float | None) -> float:
     if distance is None:
         return 0.0
     return max(0.0, min(1.0, 1.0 - float(distance)))
+
+
+def filter_confident_rag_hits(
+    hits: list[RagHit],
+    *,
+    min_top_score: float,
+    relative_to_top: float = 0.75,
+    max_hits: int = 8,
+) -> list[RagHit]:
+    """对话引用：仅保留与 top1 足够接近的高分片段，避免整库灌水。"""
+    if not hits:
+        return []
+    ordered = sorted(hits, key=lambda h: h.score, reverse=True)
+    top = ordered[0].score
+    if top < min_top_score:
+        return []
+    floor = top * relative_to_top
+    return [h for h in ordered if h.score >= floor][:max_hits]
 
 
 def normalize_topic_key(query: str) -> str:

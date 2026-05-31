@@ -81,15 +81,26 @@ class Settings(BaseSettings):
     memory_retrieval_max_tokens: int = 2000
     memory_retrieval_top_k: int = 10
 
-    # RAG：对话前按 kb_id 检索片段条数
+    # RAG：精排后注入对话/展示的片段条数
     rag_top_k: int = 8
-    # RRF 融合后送入 Rerank 的候选池大小（应 ≥ rag_top_k）
+    # 混合检索各路召回（RRF 融合 → Rerank → 取 rag_top_k）
+    rag_vector_top_k: int = 15
+    rag_bm25_top_k: int = 20
+    # 兼容旧配置；未单独设 vector/bm25 时的兜底候选池
     rag_candidate_k: int = 32
+    # 入库语义切块：过短合并下限、单块上限（字符）
+    chunk_min_chars: int = 120
+    chunk_max_chars: int = 640
+    chunk_overlap: int = 100
+    # 管理端搜索：向量/Rerank 语义分低于此阈值视为未命中
+    rag_min_relevance_score: float = 0.45
+    # 对话 RAG 更严：未达阈值则不注入上下文、不展示引用来源
+    rag_chat_min_relevance_score: float = 0.5
 
     # BGE-Reranker 精排（P1）；hash 嵌入模式下自动跳过
     rerank_enabled: bool = True
-    # 对话 RAG 默认跳过 Rerank，降低首 token 延迟；管理端「搜索」页仍走完整 hybrid_search
-    rag_chat_skip_rerank: bool = True
+    # 对话 RAG 走 Rerank 精排后再决定是否引用；管理端搜索页同样可用 hybrid_search
+    rag_chat_skip_rerank: bool = False
     # `http` 调用白山智算 / EdgeFN POST …/v1/rerank；`local` 本机 CrossEncoder（需下载权重）
     rerank_mode: str = Field(default="http", description="http | local")
     rerank_model_id: str = "BAAI/bge-reranker-v2-m3"
@@ -119,6 +130,8 @@ class Settings(BaseSettings):
     edgefn_api_key: str | None = Field(default=None, description="Bearer Token，勿提交仓库")
     edgefn_api_base_url: str = "https://api.edgefn.net/v1"
     edgefn_chat_model: str = "DeepSeek-R1-0528-Qwen3-8B"
+    # 识图专用；留空则不对 EdgeFN 发 image_url（避免纯文本对话模型 400）
+    edgefn_vision_model: str | None = Field(default=None, description="支持 vision 的 EdgeFN 模型名，勿与 edgefn_chat_model 混用")
 
     # 硅基流动：文档/图片 OCR（DeepSeek-OCR），与 EdgeFN 对话独立
     siliconflow_api_key: str | None = Field(default=None, description="Bearer Token，勿提交仓库")
@@ -137,8 +150,25 @@ class Settings(BaseSettings):
     brave_search_api_key: str | None = None
     web_search_max_results: int = 5
 
-    # 对话中调用用户已导入且启用的远程 URL 型 MCP（需 EdgeFN 支持 tools API）
+    # 学术检索 MCP
+    arxiv_search_enabled: bool = True
+    arxiv_max_results: int = 5
+    semantic_scholar_enabled: bool = True
+    semantic_scholar_api_key: str | None = None
+    semantic_scholar_max_results: int = 5
+
+    # JWT 刷新令牌（天）
+    refresh_token_expire_days: int = 30
+
+    # 对话附件临时目录（相对 knowmind-server 根）
+    chat_attachment_root: str = "data/chat_attachments"
+    chat_attachment_max_mb: int = 10
+
+    # 评估：启动时若 reports/latest.json 缺失则尝试生成 sample
+    eval_auto_bootstrap: bool = True
     external_mcp_enabled: bool = True
+    # prompt：不传 EdgeFN tools（兼容未开 vLLM auto tool choice）；native：OpenAI tools API
+    external_mcp_tool_mode: str = Field(default="prompt", description="prompt | native")
     external_mcp_max_rounds: int = 4
     external_mcp_connect_timeout: float = 15.0
     external_mcp_read_timeout: float = 120.0
@@ -151,7 +181,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _resolve_relative_paths(self) -> Self:
         """相对路径一律相对 knowmind-server 根目录，避免从仓库根启动时与 Worker 不一致。"""
-        for name in ("storage_local_root", "chroma_data_path", "whoosh_index_root"):
+        for name in ("storage_local_root", "chroma_data_path", "whoosh_index_root", "chat_attachment_root"):
             raw = getattr(self, name)
             if not raw:
                 continue

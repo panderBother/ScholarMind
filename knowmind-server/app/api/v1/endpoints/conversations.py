@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from starlette.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,14 +42,20 @@ async def list_conversations(
     session: AsyncSession = Depends(get_db),
     user_id: str = Depends(get_current_user_id),
     limit: int = 50,
+    expert_id: str | None = Query(default=None, description="仅列出该专家下的会话"),
+    main_chat_only: bool = Query(
+        default=False,
+        description="为 true 时仅返回智能对话（expert_id 为空）",
+    ),
 ):
     lim = max(1, min(limit, 100))
-    q = await session.execute(
-        select(Conversation)
-        .where(Conversation.user_id == user_id)
-        .order_by(Conversation.updated_at.desc())
-        .limit(lim),
-    )
+    stmt = select(Conversation).where(Conversation.user_id == user_id)
+    if expert_id and str(expert_id).strip():
+        stmt = stmt.where(Conversation.expert_id == expert_id.strip())
+    elif main_chat_only:
+        stmt = stmt.where(Conversation.expert_id.is_(None))
+    stmt = stmt.order_by(Conversation.updated_at.desc()).limit(lim)
+    q = await session.execute(stmt)
     return list(q.scalars().all())
 
 

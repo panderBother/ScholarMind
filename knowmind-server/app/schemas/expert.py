@@ -22,6 +22,9 @@ class ExpertOut(BaseModel):
 class ExpertChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
     deep_research: bool = False
+    web_search: bool = False
+    arxiv: bool = False
+    semantic_scholar: bool = False
     conversation_id: str | None = None
 
     @classmethod

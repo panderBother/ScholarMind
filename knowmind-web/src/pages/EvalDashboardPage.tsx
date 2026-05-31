@@ -15,7 +15,7 @@ import {
 } from "recharts";
 
 import { getAccessToken } from "@/services/auth";
-import { fetchEvalDashboard, type EvalDashboardDto } from "@/services/evaluation";
+import { fetchEvalDashboard, runEvalPipeline, type EvalDashboardDto } from "@/services/evaluation";
 
 const KPI_META = [
   { key: "faithfulness", title: "忠实度", sub: "Faithfulness" },
@@ -31,7 +31,20 @@ export function EvalDashboardPage() {
   const nav = useNavigate();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
   const [data, setData] = useState<EvalDashboardDto | null>(null);
+
+  const handleRunEval = async () => {
+    setRunning(true);
+    setError(null);
+    try {
+      setData(await runEvalPipeline());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "评估失败");
+    } finally {
+      setRunning(false);
+    }
+  };
 
   const load = useCallback(async () => {
     if (!getAccessToken()) {
@@ -92,6 +105,14 @@ export function EvalDashboardPage() {
         {data?.created_at ? (
           <p className="text-xs text-slate-400">最近评估：{data.created_at.slice(0, 19).replace("T", " ")}</p>
         ) : null}
+        <button
+          type="button"
+          disabled={running}
+          onClick={() => void handleRunEval()}
+          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:border-primary/40 disabled:opacity-50"
+        >
+          {running ? "评估运行中…" : "运行 sample 评估"}
+        </button>
       </div>
 
       {loading ? (

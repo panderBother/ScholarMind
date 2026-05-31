@@ -8,6 +8,7 @@ from app.models.mcp_schemas import (
     ImportMcpResponse,
     McpToolsResponse,
     UpdateBuiltinMcpRequest,
+    UpdateCustomMcpRequest,
 )
 from app.services import mcp_registry
 
@@ -40,6 +41,18 @@ async def patch_custom_tool(
         return mcp_registry.update_custom_enabled(user_id, custom_id, body.enabled)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.put("/custom/{custom_id}", response_model=McpToolsResponse)
+async def put_custom_tool(
+    custom_id: str,
+    body: UpdateCustomMcpRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> McpToolsResponse:
+    try:
+        return mcp_registry.update_custom(user_id, custom_id, body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/import", response_model=ImportMcpResponse)

@@ -29,7 +29,7 @@ function formatDate(iso: string): string {
 type FormMode = "create" | "edit" | null;
 
 /**
- * 知识库管理：桌面栅格；移动端顶栏标题 + 搜索/筛选/视图切换 + 卡片（文档/大小/更新 + 菜单）。
+ * 知识库管理：桌面栅格；移动端顶栏标题 + 搜索/筛选/视图切换 + 卡片（文档/条目/更新 + 菜单）。
  */
 export function KnowledgeBasesPage() {
   const nav = useNavigate();
@@ -263,7 +263,9 @@ export function KnowledgeBasesPage() {
                   <span className="mt-1 inline-block rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
                     私有
                   </span>
-                  <p className="mt-1 text-[11px] text-slate-500">文档数 · {kb.doc_count}</p>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    文档 {(kb.doc_count ?? 0).toLocaleString()} · 条目 {(kb.item_count ?? 0).toLocaleString()}
+                  </p>
                 </div>
               </div>
               <dl className="mt-3 grid grid-cols-3 gap-2 border-t border-slate-100 pt-3 text-[11px] text-slate-600 lg:grid-cols-2 lg:text-xs">
@@ -272,8 +274,8 @@ export function KnowledgeBasesPage() {
                   <dd className="font-semibold text-slate-900">{kb.doc_count.toLocaleString()}</dd>
                 </div>
                 <div>
-                  <dt className="text-slate-400">存储</dt>
-                  <dd className="font-semibold text-slate-900">—</dd>
+                  <dt className="text-slate-400">条目</dt>
+                  <dd className="font-semibold text-slate-900">{(kb.item_count ?? 0).toLocaleString()}</dd>
                 </div>
                 <div className="lg:col-span-2">
                   <dt className="text-slate-400">更新</dt>

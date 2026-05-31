@@ -2,21 +2,13 @@ import clsx from "clsx";
 import { ExternalLink, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getKnowledgeItem } from "@/services/knowledgeItems";
 import type { RagSourceDto } from "@/services/chat";
+import { openRagCitation } from "@/utils/openRagCitation";
 
 type Props = {
   kbId: string;
   sources: RagSourceDto[];
 };
-
-function buildDocumentPreviewUrl(kbId: string, docId: string, page?: number | null): string {
-  const sp = new URLSearchParams();
-  sp.set("kbId", kbId);
-  sp.set("docId", docId);
-  if (page != null && page >= 0) sp.set("page", String(page));
-  return `/documents?${sp.toString()}`;
-}
 
 export function ChatRagSources({ kbId, sources }: Props) {
   const nav = useNavigate();
@@ -26,23 +18,10 @@ export function ChatRagSources({ kbId, sources }: Props) {
 
   const openSource = async (c: RagSourceDto) => {
     if (!c.item_id && !c.document_id) return;
-
-    if (c.document_id) {
-      nav(buildDocumentPreviewUrl(kbId, c.document_id, c.page));
-      return;
-    }
-
-    if (!c.item_id) return;
-
-    setLoadingId(c.item_id);
+    const loadingKey = c.document_id ?? c.item_id ?? String(c.index);
+    setLoadingId(loadingKey);
     try {
-      const item = await getKnowledgeItem(kbId, c.item_id);
-      if (item.document_id) {
-        const page = c.page ?? item.page;
-        nav(buildDocumentPreviewUrl(kbId, item.document_id, page));
-        return;
-      }
-      nav(`/documents/items/${kbId}/${c.item_id}`);
+      await openRagCitation(kbId, c, nav);
     } finally {
       setLoadingId(null);
     }

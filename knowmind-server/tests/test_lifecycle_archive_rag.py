@@ -112,3 +112,34 @@ async def test_draft_excluded_from_hybrid_search(session: AsyncSession) -> None:
 
     hits = await hybrid_search(session, user_id, kb.id, draft_only, limit=10)
     assert hits == []
+
+
+@pytest.mark.asyncio
+async def test_orphan_index_excluded_after_item_deleted(session: AsyncSession) -> None:
+    """DB 条目已删但向量未清时，检索不应再返回幽灵引用。"""
+    user_id = "user-lifecycle-1"
+    kb = await kb_svc.create_knowledge_base(session, user_id, "孤儿索引库")
+    cat = await cat_svc.ensure_default_category(session, user_id, kb.id)
+
+    unique = "OrphanGhostToken77"
+    item = await item_svc.create_item(
+        session,
+        user_id,
+        kb.id,
+        title="将被删除",
+        content=f"幽灵内容 {unique} 测试。",
+        category_id=cat.id,
+        publish=True,
+    )
+
+    hits_before = await hybrid_search(session, user_id, kb.id, unique, limit=10)
+    assert any(h.item_id == item.id for h in hits_before)
+
+    await session.delete(item)
+    await session.commit()
+
+    hits_after = await hybrid_search(session, user_id, kb.id, unique, limit=10)
+    assert not any(h.item_id == item.id for h in hits_after)
+
+    rag_after = await search_kb(session, user_id, kb.id, unique)
+    assert rag_after.hits == []

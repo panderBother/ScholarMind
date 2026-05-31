@@ -103,3 +103,33 @@ def get_dashboard() -> EvalDashboardOut:
         version_compare=version_compare,
         stats=stats,
     )
+
+
+def run_sample_eval() -> EvalDashboardOut:
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = _repo_root()
+    pipeline = root / "knowmind-eval" / "pipelines" / "run_eval.py"
+    if not pipeline.is_file():
+        return _empty_dashboard(note="pipeline_missing")
+    try:
+        subprocess.run(
+            [sys.executable, str(pipeline), "--dataset", "sample.jsonl"],
+            check=True,
+            cwd=str(pipeline.parent.parent),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except Exception:
+        subprocess.run(
+            [sys.executable, str(pipeline), "--dataset", "sample.jsonl", "--simple-only"],
+            check=True,
+            cwd=str(pipeline.parent.parent),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    return get_dashboard()

@@ -29,6 +29,7 @@ async def create_conversation(
     deep_research: bool,
     web_search: bool,
     title: str | None = None,
+    expert_id: str | None = None,
 ) -> Conversation:
     kb_ok: str | None = None
     if knowledge_base_id and str(knowledge_base_id).strip():
@@ -36,9 +37,22 @@ async def create_conversation(
         if kb is None or kb.user_id != user_id:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "知识库不存在或无权使用")
         kb_ok = kb.id
+    expert_ok: str | None = None
+    if expert_id and str(expert_id).strip():
+        from app.models.orm import ExpertAgent
+
+        expert = await session.get(ExpertAgent, expert_id.strip())
+        if expert is None or expert.user_id != user_id:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "专家不存在或无权使用")
+        expert_ok = expert.id
+        if kb_ok and expert.kb_id != kb_ok:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "专家与知识库不匹配")
+        if not kb_ok:
+            kb_ok = expert.kb_id
     conv = Conversation(
         user_id=user_id,
         knowledge_base_id=kb_ok,
+        expert_id=expert_ok,
         deep_research=deep_research,
         web_search=web_search,
         title=title,
@@ -56,13 +70,17 @@ async def resolve_conversation(
     knowledge_base_id: str | None,
     deep_research: bool,
     web_search: bool,
+    expert_id: str | None = None,
 ) -> tuple[Conversation, bool]:
     """
     返回 (会话, 是否本次新建)。
     conversation_id 为空则新建会话。
     """
+    expert_ok = (expert_id or "").strip() or None
     if conversation_id and str(conversation_id).strip():
         conv = await get_conversation_for_user(session, conversation_id=conversation_id.strip(), user_id=user_id)
+        if expert_ok and conv.expert_id and conv.expert_id != expert_ok:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "会话不属于该专家")
         kb_ok: str | None = None
         if knowledge_base_id and str(knowledge_base_id).strip():
             kb = await session.get(KnowledgeBase, knowledge_base_id.strip())
@@ -72,6 +90,13 @@ async def resolve_conversation(
         conv.knowledge_base_id = kb_ok
         conv.deep_research = deep_research
         conv.web_search = web_search
+        if expert_ok and not conv.expert_id:
+            from app.models.orm import ExpertAgent
+
+            expert = await session.get(ExpertAgent, expert_ok)
+            if expert is None or expert.user_id != user_id:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "专家不存在或无权使用")
+            conv.expert_id = expert.id
         return conv, False
 
     conv = await create_conversation(
@@ -80,6 +105,7 @@ async def resolve_conversation(
         knowledge_base_id=knowledge_base_id,
         deep_research=deep_research,
         web_search=web_search,
+        expert_id=expert_ok,
     )
     return conv, True
 

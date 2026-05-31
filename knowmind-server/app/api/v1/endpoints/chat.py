@@ -1,12 +1,11 @@
 from fastapi import APIRouter, Depends
-from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_user_id
 from app.db.session import get_session_factory
 from app.models.schemas import ChatRequest, ChatResponse
-from app.services.chat_service import iter_chat_stream, run_chat
-from app.services.rag_context import search_kb
-from app.services.rag_logging_service import log_rag_retrieval
+from app.services.chat_sync import collect_chat_response
+from app.services.chat_service import iter_chat_stream
+from fastapi.responses import StreamingResponse
 
 router = APIRouter()
 
@@ -16,21 +15,10 @@ async def chat(
     req: ChatRequest,
     user_id: str = Depends(get_current_user_id),
 ):
-    """同步对话（含知识库 RAG 上下文）。当前版本未接多轮记忆，与流式接口行为可能不一致。"""
+    """同步对话：内部复用 `/chat/stream` 同一套 RAG / 记忆 / 工具 / 深度研究逻辑。"""
     factory = get_session_factory()
     async with factory() as session:
-        rag = await search_kb(session, user_id, req.knowledge_base_id, req.message)
-        if req.knowledge_base_id:
-            await log_rag_retrieval(
-                session,
-                user_id=user_id,
-                kb_id=req.knowledge_base_id,
-                query=req.message,
-                conversation_id=req.conversation_id,
-                hits=rag.hits,
-            )
-            await session.commit()
-        return await run_chat(req, kb_context=rag.markdown)
+        return await collect_chat_response(req, session=session, user_id=user_id)
 
 
 @router.post("/stream")

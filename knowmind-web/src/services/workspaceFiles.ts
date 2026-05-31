@@ -2,9 +2,9 @@
  * 受控文件工作区 API（需登录）。
  */
 
-import { getAccessToken } from "@/services/auth";
+import { apiFetch } from "@/services/http";
 
-const BASE = "/api/v1/workspace/files";
+const PREFIX = "/workspace/files";
 
 export type AllowedRootsResponse = {
   allowed_roots: string[];
@@ -25,23 +25,16 @@ export type FileWriteResponse = {
   bytes_written?: number;
 };
 
-async function authHeaders(): Promise<HeadersInit> {
-  const token = getAccessToken();
-  const headers: HeadersInit = { "Content-Type": "application/json" };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  return headers;
-}
-
 export async function fetchAllowedRoots(): Promise<AllowedRootsResponse> {
-  const res = await fetch(`${BASE}/roots`, { headers: await authHeaders() });
+  const res = await apiFetch(`${PREFIX}/roots`);
   if (!res.ok) throw new Error(await res.text());
   return (await res.json()) as AllowedRootsResponse;
 }
 
 export async function readWorkspaceFile(path: string): Promise<FileReadResponse> {
-  const res = await fetch(`${BASE}/read`, {
+  const res = await apiFetch(`${PREFIX}/read`, {
     method: "POST",
-    headers: await authHeaders(),
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
   });
   if (!res.ok) throw new Error(await res.text());
@@ -53,9 +46,9 @@ export async function writeWorkspaceFile(
   content: string,
   options?: { format?: "auto" | "markdown" | "text"; overwrite?: boolean },
 ): Promise<FileWriteResponse> {
-  const res = await fetch(`${BASE}/write`, {
+  const res = await apiFetch(`${PREFIX}/write`, {
     method: "POST",
-    headers: await authHeaders(),
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       path,
       content,

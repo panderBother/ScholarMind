@@ -12,7 +12,7 @@
 
 ### 智能对话
 
-基于所选知识库的 RAG 流式问答；支持会话历史、深度研究 / 联网搜索 / 文件读写开关，以及「提炼到知识库」「生成报告」等快捷操作。
+基于所选知识库的 RAG 流式问答；支持会话历史、深度研究 / 联网搜索 / arXiv / Semantic Scholar、对话附件、文件读写开关，以及「提炼到知识库」「生成报告」等快捷操作。回答正文中的 **`[1]`、`[^2]` 引用编号可点击**，直达 PDF 页或知识条目。
 
 ![智能对话](./assets/01-chat-research.png)
 
@@ -36,19 +36,19 @@
 
 ### 报告
 
-由对话一键生成结构化报告，展示摘要与引用数量，可打开详情或删除。
+由对话一键生成结构化报告，展示摘要与引用数量；正文脚注可点击溯源，支持导出 **Markdown** 与 **PDF**。
 
 ![报告](./assets/05-reports.png)
 
 ### 评估看板
 
-RAGAS 指标（忠实度、答案相关性、上下文召回 / 精准）趋势与版本对比；当前为 **UI 示意**，真实数据待评估流水线接入。
+RAGAS / 简易指标（忠实度、答案相关性、上下文召回 / 精准）趋势与版本对比；可通过 API 触发 `knowmind-eval` 流水线写入真实报告。
 
 ![评估看板](./assets/06-evaluation-dashboard.png)
 
 ### 工具与集成
 
-内置 MCP 工具开关（联网搜索、本地文件读写等），并支持从 Cursor / Claude 等环境导入外部 `mcp.json` 配置。
+内置 MCP 工具开关（联网搜索、arXiv、Semantic Scholar、本地文件读写等），并支持从 Cursor / Claude 等环境导入外部 `mcp.json` 配置。
 
 ![工具与集成](./assets/07-tools-mcp.png)
 
@@ -61,7 +61,7 @@ RAGAS 指标（忠实度、答案相关性、上下文召回 / 精准）趋势�
 | **产品目标** | 问题 → 私有 RAG（可选 MCP 扩展）→ 可核对、结构化的回答与报告 |
 | **典型用户** | 需要管理文档 / 笔记、希望对「自己的材料」提问并得到带依据回答的个人或团队 |
 | **技术原则** | FastAPI、异步任务、Chroma 向量 + Whoosh BM25、MCP、MySQL 多租户隔离 |
-| **当前阶段** | P0 纵向切片已基本贯通：账户 → 知识库 → 文档入库 → 对话 RAG → 条目 / 报告；评估流水线与 LangGraph 深度编排仍在迭代 |
+| **当前阶段** | P0 纵向切片已贯通：账户 → 知识库 → 文档入库 → 对话 RAG（含可点击引用）→ 条目 / 报告 / 评估；深度研究多步编排、专家 Agent 等持续迭代 |
 
 ---
 
@@ -73,15 +73,15 @@ flowchart LR
   B --> C[上传 PDF / 采集 URL]
   C --> D[异步解析与双索引]
   D --> E[对话页选择知识库提问]
-  E --> F[流式 RAG 回答]
+  E --> F[流式 RAG 回答 + 可点击引用]
   F --> G[提炼条目 / 生成报告]
   G --> H[条目发布后可被检索引用]
 ```
 
 1. **入库**：PDF 上传后由 Worker 抽取文本、切块、Embedding，写入 Chroma + Whoosh。
-2. **问答**：对话页选定知识库，后端检索相关片段注入 Prompt，SSE 流式返回。
-3. **沉淀**：对话结果可提炼为知识条目，或一键生成带引用的报告。
-4. **扩展**：在「工具与集成」中启用联网搜索、文件读写或导入外部 MCP。
+2. **问答**：对话页选定知识库，后端检索相关片段注入 Prompt，SSE 流式返回；正文 `[N]` 与引用卡片序号一致，可点击跳转原文。
+3. **沉淀**：对话结果可提炼为知识条目，或一键生成带脚注的研究报告。
+4. **扩展**：在「工具与集成」中启用联网搜索、学术检索、文件读写或导入外部 MCP。
 
 ---
 
@@ -89,8 +89,10 @@ flowchart LR
 
 | 目录 | 说明 |
 |------|------|
-| [`knowmind-server/`](knowmind-server/) | **FastAPI** 后端：JWT 鉴权、知识库 / 文档 / 条目 / 报告 API、PDF 解析任务、Chroma + Whoosh 索引、SSE 流式对话、MCP 工具 |
-| [`knowmind-web/`](knowmind-web/) | **React + Vite + Tailwind** 前端：登录、知识库、文档与条目、对话、报告、工具、设置等页面 |
+| [`knowmind-server/`](knowmind-server/) | **FastAPI** 后端：JWT 鉴权与 Refresh、知识库 / 文档 / 条目 / 报告 API、PDF 解析任务、Chroma + Whoosh 索引、SSE 流式对话、MCP 工具 |
+| [`knowmind-web/`](knowmind-web/) | **React + Vite + Tailwind** 前端：登录、知识库、文档与条目、对话、报告、评估、工具、设置等页面 |
+| [`knowmind-mcp/`](knowmind-mcp/) | 内置 MCP 服务实现（联网搜索、arXiv、Semantic Scholar、文件读写等） |
+| [`knowmind-eval/`](knowmind-eval/) | RAG 评估流水线（RAGAS + 简易回退指标） |
 | [`docs/`](docs/) | 工程文档：PRD、开发流程、对话记忆方案等 |
 | [`assets/`](assets/) | README 界面截图（与根目录 README 同级引用） |
 
@@ -102,14 +104,16 @@ flowchart LR
 
 | 模块 | 能力 |
 |------|------|
-| **鉴权** | 邮箱注册 / 登录，JWT 访问令牌 |
+| **鉴权** | 邮箱注册 / 登录；JWT 访问令牌 + Refresh 续期 |
 | **知识库** | 创建、列表、重命名、删除（多租户按 `user_id` 隔离） |
-| **文档** | PDF 上传、列表、预览、删除、失败重试；本地存储抽象 |
-| **解析流水线** | PDF 文本抽取 → 切块 → Embedding（`bge` / `http` / `hash`）→ Chroma + Whoosh |
+| **文档** | 多格式上传、列表、预览、删除、失败重试；本地存储抽象 |
+| **解析流水线** | 文本抽取 → 切块 → Embedding（`bge` / `http` / `hash`）→ Chroma + Whoosh |
 | **知识条目** | 对话提炼、URL 采集、草稿 / 发布 / 归档生命周期 |
-| **对话** | `POST /api/v1/chat/stream`，SSE 推送 `trace_id`、`agent_step`、`thinking_delta`、`delta`、`done`；注入 RAG 检索摘录；前端右侧「请求追踪」栏实时展示 Agent 步骤 |
-| **报告** | 由对话生成结构化报告，列表 / 详情 / 导出 Markdown |
-| **MCP** | 内置联网搜索、文件读写等工具配置与开关 |
+| **对话** | `POST /api/v1/chat` 与 `/chat/stream`（SSE）；RAG 检索 + `rag_sources` 事件；深度研究多步预取；对话附件上传 |
+| **专家** | 领域专家人设 + 流式对话，支持学术检索开关 |
+| **报告** | 由对话生成结构化报告；导出 Markdown / PDF |
+| **评估** | 读 `knowmind-eval/reports`；`POST /evaluation/run` 触发流水线 |
+| **MCP** | 内置联网搜索、学术检索、文件读写等工具配置与开关 |
 | **任务执行** | Celery + Redis，或 `INGEST_BACKGROUND_THREAD=true` 本机后台模式 |
 
 ### 前端（`knowmind-web`）
@@ -117,23 +121,23 @@ flowchart LR
 | 路由 | 页面 |
 |------|------|
 | `/login` | 登录 / 注册 |
-| `/chat` | 智能对话（会话列表、知识库切换、流式 Markdown） |
+| `/chat` | 智能对话（会话列表、知识库切换、流式 Markdown、可点击 `[N]` 引用） |
 | `/knowledge-bases` | 知识库管理 |
 | `/documents` | 文档视图 + 条目视图 |
 | `/documents/items/:kbId/:itemId` | 条目详情与编辑 |
-| `/reports`、`/reports/:id` | 报告列表与详情 |
-| `/evaluation` | RAG 评估看板（示意数据） |
+| `/reports`、`/reports/:id` | 报告列表与详情（脚注可点击、PDF 导出） |
+| `/evaluation` | RAG 评估看板 |
+| `/experts` | 领域专家列表与对话 |
 | `/tools` | MCP 工具与集成 |
-| `/settings` | 账户与偏好设置 |
+| `/settings` | 账户、改密等设置 |
 
-对话正文使用 **[Streamdown](https://streamdown.ai/)** + Shiki 代码高亮与 CJK 排版优化。
+对话与报告正文使用 **[Streamdown](https://streamdown.ai/)** + Shiki 代码高亮与 CJK 排版；全站 API 请求经 `apiFetch` 封装，**401 时自动 Refresh 重试**。
 
-### 规划中 / 占位
+### 规划中 / 未做
 
-- LangGraph 深度 Agent 编排与执行过程 SSE 面板
-- RAGAS 评估流水线对接真实看板数据
-- 文档 PDF 页级引用跳转、Milvus 生产集群、Rerank
-- Google OAuth、对象存储生产切换
+- Google OAuth
+- 对象存储（OSS / S3）生产适配
+- Milvus 集群默认化、MCP 24h 结果缓存、对话附件 TTL 清理等运维增强
 
 ---
 
@@ -176,6 +180,7 @@ pnpm dev       # 默认 http://localhost:5173
 1. 打开 <http://localhost:5173/login> 注册并登录
 2. 在「知识库」创建库，进入「文档管理」上传 PDF
 3. 等待解析完成后，在「智能对话」选择该库开始提问
+4. 若回答中出现 `[1]` 等编号，点击可跳转至对应 PDF 页或条目
 
 ---
 
@@ -187,10 +192,14 @@ pnpm dev       # 默认 http://localhost:5173
 |------|------|
 | `DATABASE_URL` | MySQL 异步连接（`mysql+asyncmy://...`） |
 | `JWT_SECRET` | JWT 签发密钥 |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | Refresh 令牌有效期（天） |
 | `STORAGE_LOCAL_ROOT` | 上传文件本地根路径 |
 | `CHROMA_DATA_PATH` / `WHOOSH_INDEX_ROOT` | 向量与全文索引目录 |
 | `EDGEFN_API_KEY` / `EDGEFN_API_BASE_URL` / `EDGEFN_CHAT_MODEL` | 对话模型网关 |
 | `EMBEDDING_MODE` | `bge` \| `http` \| `hash` |
+| `ARXIV_ENABLED` / `SEMANTIC_SCHOLAR_ENABLED` | 学术检索 MCP |
+| `CHAT_ATTACHMENT_ROOT` | 对话附件临时目录 |
+| `EVAL_REPORTS_DIR` | 评估报告 JSON 目录 |
 | `INGEST_BACKGROUND_THREAD` | `true` 时在本进程内异步解析（开发友好） |
 | `REDIS_URL` / `CELERY_TASK_ALWAYS_EAGER` | Celery 任务队列 |
 

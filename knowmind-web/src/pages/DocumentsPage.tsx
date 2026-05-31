@@ -265,9 +265,6 @@ export function DocumentsPage() {
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-slate-900 lg:text-xl">文档管理</h1>
-          <p className="mt-0.5 text-xs text-slate-500 lg:text-sm">
-            文档视图查看原文件 · 条目视图编辑识别内容（一文档一条目）· 检索用语义切分
-          </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {kbId ? (
@@ -328,26 +325,8 @@ export function DocumentsPage() {
         )
       ) : (
         <>
-      {hasQueuedDocs ? (
-        <div
-          className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 lg:px-4"
-          role="status"
-        >
-          <p className="font-medium">文档处于「待处理 / 解析中」时，需要后台 Worker 才会继续</p>
-          <p className="mt-1 text-xs leading-relaxed text-amber-800">
-            默认上传会把任务放进 <strong>Redis</strong>，须另开终端运行 <strong>Celery Worker</strong>（与 API 同目录、同{" "}
-            <code className="rounded bg-white/80 px-1">.env</code>）。本机开发可在{" "}
-            <code className="rounded bg-white/80 px-1">.env</code> 设置{" "}
-            <code className="rounded bg-white/80 px-1">INGEST_BACKGROUND_THREAD=true</code> 免 Worker（后台线程解析）。
-            若状态卡在「解析中」很久，可看 API 终端日志是否卡在首次下载嵌入模型；也可点「重新解析」重排队列。
-            本页每 2 秒自动刷新解析进度。
-          </p>
-        </div>
-      ) : null}
-
-      <section className="grid gap-4 lg:grid-cols-3 lg:gap-6">
-        <div className="space-y-3 lg:col-span-2 lg:space-y-4">
-          <div className="hidden lg:block">
+      <section className="space-y-3 lg:space-y-4">
+        <div className="hidden lg:block">
             <label className="mb-1 block text-xs font-medium text-slate-600">目标知识库</label>
             <div className="relative max-w-md">
               <select
@@ -403,15 +382,6 @@ export function DocumentsPage() {
             onBrowseClick={() => fileRef.current?.click()}
             onSelectFiles={uploadFiles}
           />
-        </div>
-
-        <aside className="hidden rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-600 shadow-card lg:block">
-          <h2 className="text-sm font-semibold text-slate-900">说明</h2>
-          <p className="mt-2 leading-relaxed">
-            所有格式上传后先<strong>预览确认</strong>，再异步入库。确认后 API 把解析任务发到{" "}
-            <strong>Redis</strong>，须另有终端运行 <strong>Celery Worker</strong>。列表会显示各阶段解析进度。
-          </p>
-        </aside>
       </section>
 
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card lg:rounded-xl">

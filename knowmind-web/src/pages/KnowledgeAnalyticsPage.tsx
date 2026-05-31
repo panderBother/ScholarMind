@@ -291,10 +291,14 @@ export function KnowledgeAnalyticsPage() {
                         tick={{ fontSize: 10 }}
                       />
                       <Tooltip
-                        formatter={(value, name) => [value, name === "search" ? "检索" : "RAG"]}
-                        labelFormatter={(_, payload) =>
-                          payload?.[0]?.payload?.fullTitle ?? ""
-                        }
+                        formatter={(value, name) => [
+                          value,
+                          name === "search" ? "检索" : "RAG",
+                        ]}
+                        labelFormatter={(label, payload) => {
+                          const row = payload?.[0]?.payload as { fullTitle?: string } | undefined;
+                          return row?.fullTitle ?? String(label ?? "");
+                        }}
                       />
                       <Legend />
                       <Bar dataKey="search" name="检索命中" stackId="a" fill="#0066FF" radius={[0, 0, 0, 0]} />

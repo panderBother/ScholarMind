@@ -23,6 +23,7 @@ from app.schemas.document import (
 )
 from app.services import item_indexing
 from app.storage import get_blob_storage
+from app.utils.db_text import clamp_mediumtext
 
 log = logging.getLogger(__name__)
 
@@ -138,7 +139,7 @@ async def upload_documents(
             try:
                 fspath = storage.filesystem_path(key)
                 result = await asyncio.to_thread(_parse_sync, fspath, raw_name, file_type)
-                doc.parsed_content = result.merged_content()[:200_000]
+                doc.parsed_content = clamp_mediumtext(result.merged_content())
                 doc.parsed_title = result.title
                 doc.parsed_summary = result.summary
                 doc.title = result.title
@@ -214,7 +215,7 @@ async def update_parsed_content(
     doc = await get_document(session, user_id, kb_id, doc_id)
     if doc.status != "preview":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅「待预览」状态的文档可编辑")
-    doc.parsed_content = body.content.strip()
+    doc.parsed_content = clamp_mediumtext(body.content.strip()) or ""
     if body.title is not None:
         doc.parsed_title = body.title.strip()[:512] or None
         doc.title = doc.parsed_title

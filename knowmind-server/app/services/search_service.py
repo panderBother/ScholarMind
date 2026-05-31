@@ -15,7 +15,7 @@ from app.indexing.vector_factory import get_vector_index
 from app.indexing.whoosh_index import whoosh_search
 from app.ingest.embedding import embed_texts
 from app.ingest.rerank import rerank_candidates
-from app.models.orm import KnowledgeItem
+from app.models.orm import Document, KnowledgeItem
 from app.services.knowledge_base_service import get_knowledge_base
 from app.services.rag_logging_service import distance_to_score
 
@@ -128,23 +128,49 @@ def _bm25_hits(root: str, kb_id: str, query: str, top_k: int) -> list[dict[str, 
     return rows
 
 
+def _top_bm25_score(bm25_hits: list[dict[str, Any]]) -> float:
+    if not bm25_hits:
+        return 0.0
+    return max(float(h.get("score") or 0) for h in bm25_hits)
+
+
+_KEYWORD_CONFIDENT_BM25 = 0.35
+
+
 def _fuse_candidates(
     vector_hits: list[dict[str, Any]],
     bm25_hits: list[dict[str, Any]],
+    *,
+    embed_mode: str = "bge",
+    strict: bool = False,
 ) -> tuple[list[dict[str, Any]], set[str], dict[str, float]]:
-    """RRF 融合；无 BM25 命中时仍保留向量路（供 Rerank 精排）。"""
+    """RRF 融合；strict=True 时用于对话 RAG，禁止纯 BM25 与弱向量灌入候选池。"""
+    settings = get_settings()
     bm25_ids = {str(h.get("chunk_id") or "") for h in bm25_hits}
     vector_score_by_id = {
         str(h.get("chunk_id") or ""): float(h.get("score") or 0) for h in vector_hits
     }
+    min_vec = settings.rag_chat_min_relevance_score if strict else settings.rag_min_relevance_score
+    top_vector = max(vector_hits, key=lambda h: float(h.get("score") or 0)) if vector_hits else None
+    top_vec_score = float(top_vector.get("score") or 0) if top_vector else 0.0
+    top_bm25 = _top_bm25_score(bm25_hits)
+    keyword_confident = top_bm25 >= _KEYWORD_CONFIDENT_BM25
+
+    if embed_mode != "hash" and strict:
+        if not vector_hits and not keyword_confident:
+            return [], bm25_ids, vector_score_by_id
+        if vector_hits and top_vec_score < min_vec and not keyword_confident:
+            return [], bm25_ids, vector_score_by_id
 
     if vector_hits and bm25_hits:
         fused = rrf_merge(vector_hits, bm25_hits)
     elif bm25_hits:
-        fused = rrf_merge(bm25_hits)
+        if embed_mode == "hash" or not strict or keyword_confident:
+            fused = rrf_merge(bm25_hits)
+        else:
+            fused = []
     elif vector_hits:
-        top_vector = max(vector_hits, key=lambda h: float(h.get("score") or 0))
-        if float(top_vector.get("score") or 0) >= 0.55:
+        if top_vec_score >= min_vec:
             fused = rrf_merge(vector_hits)
         else:
             fused = []
@@ -154,19 +180,45 @@ def _fuse_candidates(
     return fused, bm25_ids, vector_score_by_id
 
 
+def _semantic_relevance_score(
+    h: dict[str, Any],
+    vector_score_by_id: dict[str, float],
+) -> float:
+    """展示与门槛用的语义相关度：Rerank > 向量；不用 RRF 融合分（通常仅 0.01–0.05）。"""
+    if h.get("rerank_score") is not None:
+        return float(h["rerank_score"])
+    cid = str(h.get("chunk_id") or "")
+    if h.get("vector_score") is not None:
+        return float(h["vector_score"])
+    return vector_score_by_id.get(cid, 0.0)
+
+
 def _passes_relevance_gate(
     chunk_id: str,
     *,
     bm25_ids: set[str],
+    bm25_score_by_id: dict[str, float],
     vector_score_by_id: dict[str, float],
     rerank_applied: bool,
+    h: dict[str, Any],
+    embed_mode: str,
+    allow_keyword_fallback: bool,
 ) -> bool:
     settings = get_settings()
-    if rerank_applied:
+    semantic = _semantic_relevance_score(h, vector_score_by_id)
+    min_score = settings.rag_min_relevance_score
+    if embed_mode == "hash":
+        return chunk_id in bm25_ids or semantic >= min_score
+    threshold = (
+        settings.rerank_min_score
+        if rerank_applied and settings.rerank_min_score is not None
+        else min_score
+    )
+    if semantic >= threshold:
         return True
-    if chunk_id in bm25_ids:
-        return True
-    return vector_score_by_id.get(chunk_id, 0) >= 0.35
+    if allow_keyword_fallback and chunk_id in bm25_ids:
+        return bm25_score_by_id.get(chunk_id, 0.0) >= 0.35
+    return False
 
 
 async def hybrid_search(
@@ -179,6 +231,8 @@ async def hybrid_search(
     category_id: str | None = None,
     tags: list[str] | None = None,
     rerank: bool | None = None,
+    strict_fusion: bool = False,
+    allow_keyword_fallback: bool = True,
 ) -> list[HybridSearchHit]:
     """
     混合检索主流程：
@@ -196,24 +250,37 @@ async def hybrid_search(
 
     settings = get_settings()
     cap = max(1, min(int(limit), 50))
-    candidate_k = min(64, max(settings.rag_candidate_k, cap * 2))
+    vector_k = max(1, min(int(settings.rag_vector_top_k), 64))
+    bm25_k = max(1, min(int(settings.rag_bm25_top_k), 64))
+    rerank_pool_k = min(40, vector_k + bm25_k)
 
     vector_hits, bm25_hits = await asyncio.gather(
-        _vector_hits(kb_id, query, candidate_k),
+        _vector_hits(kb_id, query, vector_k),
         asyncio.to_thread(
             _bm25_hits,
             settings.whoosh_index_root,
             kb_id,
             query,
-            candidate_k,
+            bm25_k,
         ),
     )
 
-    fused, bm25_ids, vector_score_by_id = _fuse_candidates(vector_hits, bm25_hits)
     embed_mode = (settings.embedding_mode or "bge").strip().lower()
+    fused, bm25_ids, vector_score_by_id = _fuse_candidates(
+        vector_hits,
+        bm25_hits,
+        embed_mode=embed_mode,
+        strict=strict_fusion,
+    )
+    bm25_score_by_id = {
+        str(h.get("chunk_id") or ""): float(h.get("score") or 0) for h in bm25_hits
+    }
     do_rerank = rerank if rerank is not None else settings.rerank_enabled
-    if do_rerank and embed_mode != "hash" and fused:
-        reranked = await asyncio.to_thread(rerank_candidates, query, fused)
+    rerank_input = fused[:rerank_pool_k] if fused else []
+    if do_rerank and embed_mode != "hash" and rerank_input:
+        reranked = await asyncio.to_thread(rerank_candidates, query, rerank_input)
+        if len(fused) > rerank_pool_k:
+            reranked.extend(fused[rerank_pool_k:])
     else:
         reranked = fused
     rerank_applied = bool(
@@ -225,6 +292,7 @@ async def hybrid_search(
     trimmed = reranked[:cap]
 
     item_ids = [str(h.get("item_id") or "") for h in trimmed if h.get("item_id")]
+    doc_ids = [str(h.get("doc_id") or "") for h in trimmed if h.get("doc_id")]
     items_by_id: dict[str, KnowledgeItem] = {}
     if item_ids:
         stmt = select(KnowledgeItem).where(
@@ -235,12 +303,32 @@ async def hybrid_search(
         for item in rows.scalars().all():
             items_by_id[item.id] = item
 
+    docs_by_id: dict[str, Document] = {}
+    if doc_ids:
+        stmt = select(Document).where(
+            Document.kb_id == kb_id,
+            Document.id.in_(doc_ids),
+        )
+        rows = await session.execute(stmt)
+        for doc in rows.scalars().all():
+            docs_by_id[doc.id] = doc
+
     tag_filter = [t for t in (tags or []) if t.strip()]
     results: list[HybridSearchHit] = []
 
     for h in trimmed:
-        item_id = str(h.get("item_id") or "")
+        item_id = str(h.get("item_id") or "").strip()
         item = items_by_id.get(item_id) if item_id else None
+        doc_id = str(h.get("doc_id") or "").strip()
+
+        if item_id:
+            if item is None or item.lifecycle_status != "published":
+                continue
+        elif doc_id:
+            if doc_id not in docs_by_id:
+                continue
+        else:
+            continue
 
         if category_id and item is not None and item.category_id != category_id:
             continue
@@ -248,7 +336,6 @@ async def hybrid_search(
             continue
 
         text = str(h.get("text") or "")
-        doc_id = str(h.get("doc_id") or "")
         if item is not None:
             title = item.title
             source_type = item.source_type
@@ -259,7 +346,7 @@ async def hybrid_search(
             snippet = _snippet(text or item.content or item.summary or "")
         else:
             title = _snippet(text, 80) or "未命名片段"
-            source_type = "document" if doc_id else "unknown"
+            source_type = "document"
             page = int(h.get("page") or 0)
             item_tags = []
             snippet = _snippet(text)
@@ -268,11 +355,16 @@ async def hybrid_search(
             item_id = str(h.get("chunk_id") or "")
 
         cid = str(h.get("chunk_id") or "")
+        semantic_score = _semantic_relevance_score(h, vector_score_by_id)
         if not _passes_relevance_gate(
             cid,
             bm25_ids=bm25_ids,
+            bm25_score_by_id=bm25_score_by_id,
             vector_score_by_id=vector_score_by_id,
             rerank_applied=rerank_applied,
+            h=h,
+            embed_mode=embed_mode,
+            allow_keyword_fallback=allow_keyword_fallback,
         ):
             continue
 
@@ -284,7 +376,7 @@ async def hybrid_search(
                 title=title,
                 text=text,
                 snippet=snippet,
-                score=float(h.get("score") or 0.0),
+                score=semantic_score,
                 source_type=source_type,
                 page=page if page >= 0 else None,
                 tags=item_tags,

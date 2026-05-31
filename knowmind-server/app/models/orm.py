@@ -4,9 +4,13 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+# MySQL TEXT 仅 ~64KB；大文档/条目用 MEDIUMTEXT（SQLite 测试仍用 Text）
+MediumText = Text().with_variant(MEDIUMTEXT(), "mysql")
 
 
 def new_uuid() -> str:
@@ -122,7 +126,7 @@ class KnowledgeItem(Base):
     )
     source_type: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
     title: Mapped[str] = mapped_column(String(200), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(MediumText, nullable=False)
     summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
     tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
     lifecycle_status: Mapped[str] = mapped_column(
@@ -168,7 +172,7 @@ class Document(Base):
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     parsed_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     parsed_summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    parsed_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parsed_content: Mapped[str | None] = mapped_column(MediumText, nullable=True)
     parse_progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     parse_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -197,6 +201,9 @@ class Conversation(Base):
     )
     knowledge_base_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("knowledge_bases.id", ondelete="SET NULL"), nullable=True
+    )
+    expert_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("expert_agents.id", ondelete="SET NULL"), nullable=True, index=True
     )
     deep_research: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
     web_search: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)

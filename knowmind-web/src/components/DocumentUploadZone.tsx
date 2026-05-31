@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { UploadCloud } from "lucide-react";
 
-import { filterSupportedFiles, SUPPORTED_UPLOAD_ACCEPT } from "@/services/documents";
+import { filterSupportedFiles } from "@/services/documents";
 
 type Props = {
   kbName: string;
@@ -91,9 +91,8 @@ export function DocumentUploadZone({
         {dragOver ? "松开鼠标即可上传" : `拖拽文件到此处，或选择上传至「${kbName}」`}
       </p>
       <p className="mt-1 text-xs text-slate-400">
-        支持 PDF / DOCX / Excel / CSV / Markdown / TXT / 图片 · 上传后预览确认再入库
+        支持 PDF、DOCX、Excel、CSV、Markdown、TXT、图片
       </p>
-      <p className="mt-0.5 text-xs text-slate-400">格式：{SUPPORTED_UPLOAD_ACCEPT.replace(/\./g, " ").trim()}</p>
 
       {uploading ? (
         <div className="mx-auto mt-4 w-full max-w-xs">

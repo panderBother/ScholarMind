@@ -22,13 +22,43 @@ def create_access_token(subject: str) -> tuple[str, int]:
     days = settings.access_token_expire_days
     expire = datetime.now(timezone.utc) + timedelta(days=days)
     exp_ts = int(expire.timestamp())
-    payload = {"sub": subject, "exp": exp_ts}
+    payload = {"sub": subject, "exp": exp_ts, "typ": "access"}
     token = jwt.encode(
         payload,
         settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
     )
     return token, int(timedelta(days=days).total_seconds())
+
+
+def create_refresh_token(subject: str) -> tuple[str, int]:
+    days = settings.refresh_token_expire_days
+    expire = datetime.now(timezone.utc) + timedelta(days=days)
+    exp_ts = int(expire.timestamp())
+    payload = {"sub": subject, "exp": exp_ts, "typ": "refresh"}
+    token = jwt.encode(
+        payload,
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+    return token, int(timedelta(days=days).total_seconds())
+
+
+def decode_refresh_token(token: str) -> str | None:
+    try:
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+        )
+        if payload.get("typ") != "refresh":
+            return None
+        sub = payload.get("sub")
+        if sub is None or not isinstance(sub, str):
+            return None
+        return sub
+    except JWTError:
+        return None
 
 
 def decode_access_token(token: str) -> str | None:
@@ -39,6 +69,9 @@ def decode_access_token(token: str) -> str | None:
             settings.jwt_secret,
             algorithms=[settings.jwt_algorithm],
         )
+        typ = payload.get("typ")
+        if typ is not None and typ != "access":
+            return None
         sub = payload.get("sub")
         if sub is None or not isinstance(sub, str):
             return None

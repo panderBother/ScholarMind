@@ -13,12 +13,6 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int  # seconds
-
-
 class UserPublic(BaseModel):
     id: str
     email: EmailStr
@@ -27,10 +21,29 @@ class UserPublic(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str | None = None
+    token_type: str = "bearer"
+    expires_in: int  # seconds
+    refresh_expires_in: int | None = None
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=10)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
 class AuthOkResponse(BaseModel):
     """注册/登录统一返回：用户信息 + JWT。"""
 
     user: UserPublic
     access_token: str
+    refresh_token: str | None = None
     token_type: str = "bearer"
     expires_in: int
+    refresh_expires_in: int | None = None

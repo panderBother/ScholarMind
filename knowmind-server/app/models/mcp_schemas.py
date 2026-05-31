@@ -5,7 +5,9 @@ class McpServerConfig(BaseModel):
     command: str | None = None
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
     url: str | None = None
+    cwd: str | None = None
 
 
 class BuiltinMcpToolDto(BaseModel):
@@ -37,6 +39,13 @@ class UpdateBuiltinMcpRequest(BaseModel):
     enabled: bool
 
 
+class UpdateCustomMcpRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=500)
+    enabled: bool = True
+    config: McpServerConfig
+
+
 class ImportMcpRequest(BaseModel):
     """Cursor / Claude Desktop 风格 mcp.json 全文或 mcpServers 对象。"""
 
@@ -46,4 +55,5 @@ class ImportMcpRequest(BaseModel):
 class ImportMcpResponse(BaseModel):
     imported: int
     skipped: int
+    skip_details: list[str] = Field(default_factory=list)
     custom: list[CustomMcpToolDto]

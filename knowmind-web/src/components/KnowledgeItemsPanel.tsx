@@ -21,6 +21,7 @@ import {
   deleteKnowledgeItem,
   listKnowledgeItems,
   publishKnowledgeItem,
+  reindexKnowledgeItem,
   updateKnowledgeItem,
   type KnowledgeItemDto,
 } from "@/services/knowledgeItems";
@@ -122,6 +123,15 @@ export function KnowledgeItemsPanel({ kbId, documentId, documentName, onClearDoc
       await loadItems();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "发布失败");
+    }
+  };
+
+  const onReindex = async (item: KnowledgeItemDto) => {
+    try {
+      await reindexKnowledgeItem(kbId, item.id);
+      await loadItems();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "重建索引失败");
     }
   };
 
@@ -349,6 +359,9 @@ export function KnowledgeItemsPanel({ kbId, documentId, documentName, onClearDoc
                         : undefined
                     }
                     onPublish={item.lifecycle_status === "draft" ? () => void onPublish(item) : undefined}
+                    onReindex={
+                      item.lifecycle_status === "published" ? () => void onReindex(item) : undefined
+                    }
                     onArchive={
                       item.lifecycle_status === "published" && item.source_type === "manual"
                         ? () => void onArchive(item)

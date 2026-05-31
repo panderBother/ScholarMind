@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response as RawResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_id
@@ -95,3 +95,23 @@ async def export_report_markdown(
             body += f"- [^{idx}] **{title}** {meta}\n"
     headers = {"Content-Disposition": attachment_content_disposition(row.title)}
     return PlainTextResponse(content=body, media_type="text/markdown; charset=utf-8", headers=headers)
+
+
+@router.get("/{report_id}/export.pdf")
+async def export_report_pdf(
+    report_id: str,
+    session: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    from app.services.report_pdf_service import markdown_to_pdf_bytes
+
+    try:
+        row = await report_svc.get_report(session, user_id, report_id)
+    except ReportError as e:
+        raise HTTPException(e.status_code, detail=e.message) from e
+    body = report_svc.finalize_report_markdown(row.content_md or "")
+    if row.summary:
+        body = f"> {row.summary}\n\n{body}"
+    pdf_bytes = markdown_to_pdf_bytes(title=row.title, markdown=body)
+    headers = {"Content-Disposition": attachment_content_disposition(f"{row.title}.pdf")}
+    return RawResponse(content=pdf_bytes, media_type="application/pdf", headers=headers)

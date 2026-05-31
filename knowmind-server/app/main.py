@@ -20,6 +20,9 @@ async def lifespan(app: FastAPI):
     )
     if s.database_url:
         await init_db(s.database_url)
+    from app.services.eval_bootstrap import bootstrap_eval_report
+
+    bootstrap_eval_report()
     yield
     s = get_settings()
     if s.database_url:

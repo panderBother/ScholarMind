@@ -1,7 +1,4 @@
-import { getAccessToken } from "@/services/auth";
-
-const BASE = "/api/v1";
-
+import { apiFetch, parseApiError } from "@/services/http";
 export type KnowledgeItemDto = {
   id: string;
   kb_id: string;
@@ -43,30 +40,10 @@ export type KnowledgeItemUpdatePayload = {
   source?: string;
 };
 
-function authHeaders(json = false): HeadersInit {
-  const token = getAccessToken();
-  if (!token) throw new Error("未登录");
-  const h: HeadersInit = { Authorization: `Bearer ${token}` };
-  if (json) h["Content-Type"] = "application/json";
-  return h;
-}
-
-async function parseError(res: Response): Promise<string> {
-  try {
-    const j = (await res.json()) as { detail?: unknown };
-    const d = j.detail;
-    if (typeof d === "string") return d;
-    return res.statusText;
-  } catch {
-    return res.statusText;
-  }
-}
-
 export async function getKnowledgeItem(kbId: string, itemId: string): Promise<KnowledgeItemDto> {
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/items/${itemId}`, {
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await parseError(res));
+  const res = await apiFetch(`/knowledge-bases/${kbId}/items/${itemId}`, {
+    });
+  if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as KnowledgeItemDto;
 }
 
@@ -87,10 +64,9 @@ export async function listKnowledgeItems(
   if (params?.document_id) qs.set("document_id", params.document_id);
   if (params?.q) qs.set("q", params.q);
   const suffix = qs.toString() ? `?${qs.toString()}` : "";
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/items${suffix}`, {
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await parseError(res));
+  const res = await apiFetch(`/knowledge-bases/${kbId}/items${suffix}`, {
+    });
+  if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as KnowledgeItemDto[];
 }
 
@@ -98,12 +74,12 @@ export async function createKnowledgeItem(
   kbId: string,
   body: KnowledgeItemCreatePayload,
 ): Promise<KnowledgeItemDto> {
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/items`, {
+  const res = await apiFetch(`/knowledge-bases/${kbId}/items`, {
     method: "POST",
-    headers: authHeaders(true),
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await parseError(res));
+  if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as KnowledgeItemDto;
 }
 
@@ -112,37 +88,42 @@ export async function updateKnowledgeItem(
   itemId: string,
   body: KnowledgeItemUpdatePayload,
 ): Promise<KnowledgeItemDto> {
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/items/${itemId}`, {
+  const res = await apiFetch(`/knowledge-bases/${kbId}/items/${itemId}`, {
     method: "PATCH",
-    headers: authHeaders(true),
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await parseError(res));
+  if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as KnowledgeItemDto;
 }
 
 export async function publishKnowledgeItem(kbId: string, itemId: string): Promise<KnowledgeItemDto> {
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/items/${itemId}/publish`, {
+  const res = await apiFetch(`/knowledge-bases/${kbId}/items/${itemId}/publish`, {
     method: "POST",
-    headers: authHeaders(),
+    });
+  if (!res.ok) throw new Error(await parseApiError(res));
+  return (await res.json()) as KnowledgeItemDto;
+}
+
+export async function reindexKnowledgeItem(kbId: string, itemId: string): Promise<KnowledgeItemDto> {
+  const res = await apiFetch(`/knowledge-bases/${kbId}/items/${itemId}/reindex`, {
+    method: "POST",
   });
-  if (!res.ok) throw new Error(await parseError(res));
+  if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as KnowledgeItemDto;
 }
 
 export async function archiveKnowledgeItem(kbId: string, itemId: string): Promise<KnowledgeItemDto> {
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/items/${itemId}/archive`, {
+  const res = await apiFetch(`/knowledge-bases/${kbId}/items/${itemId}/archive`, {
     method: "POST",
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await parseError(res));
+    });
+  if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as KnowledgeItemDto;
 }
 
 export async function deleteKnowledgeItem(kbId: string, itemId: string): Promise<void> {
-  const res = await fetch(`${BASE}/knowledge-bases/${kbId}/items/${itemId}`, {
+  const res = await apiFetch(`/knowledge-bases/${kbId}/items/${itemId}`, {
     method: "DELETE",
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await parseError(res));
+    });
+  if (!res.ok) throw new Error(await parseApiError(res));
 }

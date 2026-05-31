@@ -931,7 +931,7 @@ users 1───N knowledge_bases 1───N documents
 [
   {
     "id": "uuid",
-    "name": "深度学习论文",
+    "name": "深度学习文档",
     "doc_count": 12,
     "created_at": "...",
     "updated_at": "..."

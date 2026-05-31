@@ -4,6 +4,7 @@ from app.api.v1.endpoints import (
     analytics,
     auth,
     chat,
+    chat_attachments,
     chat_feedback,
     conversations,
     distill,
@@ -31,6 +32,7 @@ api_router.include_router(conversations.router, prefix="/conversations", tags=["
 api_router.include_router(reports.router, prefix="/reports", tags=["reports"])
 api_router.include_router(experts.router, prefix="/experts", tags=["experts"])
 api_router.include_router(chat.router, prefix="/chat", tags=["chat"])
+api_router.include_router(chat_attachments.router, prefix="/chat/attachments", tags=["chat"])
 api_router.include_router(chat_feedback.router, prefix="/chat", tags=["chat"])
 api_router.include_router(distill.router, prefix="/knowledge-bases", tags=["distill"])
 api_router.include_router(

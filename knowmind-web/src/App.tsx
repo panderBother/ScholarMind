@@ -2,7 +2,6 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "@/components/layout/AppShell";
 import { ChatPage } from "@/pages/ChatPage";
 import { DocumentsPage } from "@/pages/DocumentsPage";
-import { EvalDashboardPage } from "@/pages/EvalDashboardPage";
 import { KnowledgeItemDetailPage } from "@/pages/KnowledgeItemDetailPage";
 import { ExpertChatPage } from "@/pages/ExpertChatPage";
 import { ExpertsPage } from "@/pages/ExpertsPage";
@@ -12,7 +11,6 @@ import { KnowledgeBasesPage } from "@/pages/KnowledgeBasesPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { ReportPage } from "@/pages/ReportPage";
 import { ReportsIndexPage } from "@/pages/ReportsIndexPage";
-import { SearchPage } from "@/pages/SearchPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { ToolsPage } from "@/pages/ToolsPage";
 
@@ -29,7 +27,6 @@ export default function App() {
         <Route element={<AppShell />}>
           <Route path="/" element={<Navigate to="/chat" replace />} />
           <Route path="/chat" element={<ChatPage />} />
-          <Route path="/search" element={<SearchPage />} />
           <Route path="/knowledge-bases" element={<KnowledgeBasesPage />} />
           <Route path="/knowledge-bases/:kbId/analytics" element={<KnowledgeAnalyticsPage />} />
           <Route path="/knowledge-bases/:kbId/production" element={<KnowledgeProductionPage />} />
@@ -40,7 +37,6 @@ export default function App() {
           <Route path="/reports/:id" element={<ReportPage />} />
           <Route path="/experts" element={<ExpertsPage />} />
           <Route path="/experts/:expertId" element={<ExpertChatPage />} />
-          <Route path="/evaluation" element={<EvalDashboardPage />} />
           <Route path="/tools" element={<ToolsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>

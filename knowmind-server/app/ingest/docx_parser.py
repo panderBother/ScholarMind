@@ -1,8 +1,27 @@
 from __future__ import annotations
 
+import logging
+import os
+import re
+import tempfile
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 from app.ingest.types import PageText, ParseResult
+
+log = logging.getLogger(__name__)
+
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_W_TAG = f"{{{_W_NS}}}"
+_NULL_REL_PATTERN = re.compile(
+    r'<Relationship\b[^>]*\bTarget\s*=\s*"(?:NULL|null|)"[^>]*/>\s*',
+    re.IGNORECASE,
+)
+_NULL_REL_PATTERN_SQ = re.compile(
+    r"<Relationship\b[^>]*\bTarget\s*=\s*'(?:NULL|null|)'[^>]*/>\s*",
+    re.IGNORECASE,
+)
 
 
 def _cell_text(cell) -> str:
@@ -45,7 +64,61 @@ def _heading_level(style_name: str | None) -> int | None:
     return None
 
 
-def parse_docx(path: str, filename: str | None = None) -> ParseResult:
+def strip_null_relationships(rels_xml: bytes) -> bytes:
+    """移除 OOXML 中 Target=NULL 的损坏 Relationship（部分 WPS/旧版 Word 导出会带）。"""
+    text = rels_xml.decode("utf-8", errors="ignore")
+    text = _NULL_REL_PATTERN.sub("", text)
+    text = _NULL_REL_PATTERN_SQ.sub("", text)
+    return text.encode("utf-8")
+
+
+def repair_docx_file(path: str) -> str:
+    """复制 docx 并清理 .rels 中的 NULL 引用，返回临时文件路径（调用方负责删除）。"""
+    fd, out_path = tempfile.mkstemp(suffix=".docx")
+    os.close(fd)
+    with zipfile.ZipFile(path, "r") as zin, zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename.endswith(".rels") and b"NULL" in data:
+                data = strip_null_relationships(data)
+            zout.writestr(item, data)
+    return out_path
+
+
+def _parse_docx_xml_fallback(path: str) -> str:
+    """不依赖 python-docx，直接从 word/document.xml 抽取段落文本。"""
+    with zipfile.ZipFile(path, "r") as zf:
+        try:
+            xml_bytes = zf.read("word/document.xml")
+        except KeyError as e:
+            raise ValueError("DOCX 缺少 word/document.xml，文件可能已损坏") from e
+    root = ET.fromstring(xml_bytes)
+    blocks: list[str] = []
+    for para in root.iter(f"{_W_TAG}p"):
+        parts: list[str] = []
+        for node in para.iter(f"{_W_TAG}t"):
+            if node.text:
+                parts.append(node.text)
+        line = "".join(parts).strip()
+        if line:
+            blocks.append(line)
+    return "\n\n".join(blocks)
+
+
+def _build_parse_result(content: str, path: str, filename: str | None) -> ParseResult:
+    base = (filename or Path(path).name).rsplit(".", 1)[0]
+    title = base[:200] if base else None
+    summary = None
+    for block in content.split("\n\n"):
+        t = block.lstrip("#").strip()
+        if t:
+            summary = t[:500]
+            break
+    pages = [PageText(page_index=0, text=content)] if content else []
+    return ParseResult(pages=pages, title=title, summary=summary, content=content)
+
+
+def _parse_docx_with_python_docx(path: str, filename: str | None = None) -> ParseResult:
     from docx import Document as DocxDocument  # noqa: PLC0415
     from docx.table import Table  # noqa: PLC0415
     from docx.text.paragraph import Paragraph  # noqa: PLC0415
@@ -81,16 +154,44 @@ def parse_docx(path: str, filename: str | None = None) -> ParseResult:
                 blocks.append(md)
 
     content = "\n\n".join(blocks)
-    base = (filename or Path(path).name).rsplit(".", 1)[0]
-    title = base[:200] if base else None
-    summary = None
-    for block in blocks:
-        t = block.lstrip("#").strip()
-        if t:
-            summary = t[:500]
-            break
-    pages = [PageText(page_index=0, text=content)] if content else []
-    return ParseResult(pages=pages, title=title, summary=summary, content=content)
+    return _build_parse_result(content, path, filename)
+
+
+def parse_docx(path: str, filename: str | None = None) -> ParseResult:
+    last_err: Exception | None = None
+
+    try:
+        return _parse_docx_with_python_docx(path, filename)
+    except Exception as e:
+        last_err = e
+        log.warning("docx python-docx failed (%s): %s", e, path)
+
+    repaired: str | None = None
+    try:
+        repaired = repair_docx_file(path)
+        try:
+            return _parse_docx_with_python_docx(repaired, filename)
+        except Exception as e:
+            last_err = e
+            log.warning("docx repair+python-docx failed (%s): %s", e, path)
+        for src in (repaired, path):
+            try:
+                content = _parse_docx_xml_fallback(src)
+            except Exception as e:
+                last_err = e
+                continue
+            if content.strip():
+                log.info("docx parsed via xml fallback: %s", path)
+                return _build_parse_result(content, path, filename)
+    finally:
+        if repaired and os.path.isfile(repaired):
+            try:
+                os.unlink(repaired)
+            except OSError:
+                pass
+
+    msg = "无法解析该 DOCX（文件可能含损坏引用）。请用 Word/WPS「另存为」新 .docx 后重试"
+    raise ValueError(msg) from last_err
 
 
 def parse_doc(path: str, filename: str | None = None) -> ParseResult:
@@ -103,7 +204,6 @@ def parse_doc(path: str, filename: str | None = None) -> ParseResult:
         ole = olefile.OleFileIO(path)
         try:
             if ole.exists("WordDocument"):
-                # 仅能粗略提取可见 ASCII/Unicode，复杂格式请转 DOCX
                 data = ole.openstream("WordDocument").read()
                 text_parts: list[str] = []
                 chunk = data.decode("utf-16-le", errors="ignore")

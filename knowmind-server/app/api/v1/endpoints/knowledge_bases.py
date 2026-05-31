@@ -27,7 +27,13 @@ async def list_knowledge_bases(
     user_id: str = Depends(get_current_user_id),
 ):
     rows = await kb_service.list_knowledge_bases(session, user_id)
-    return [KnowledgeBaseOut.model_validate(r) for r in rows]
+    item_counts = await kb_service.count_items_by_kb_ids(session, [r.id for r in rows])
+    return [
+        KnowledgeBaseOut.model_validate(r).model_copy(
+            update={"item_count": item_counts.get(r.id, 0)},
+        )
+        for r in rows
+    ]
 
 
 @router.get("/{kb_id}/search", response_model=SearchResultOut)

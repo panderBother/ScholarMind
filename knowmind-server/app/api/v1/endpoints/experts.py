@@ -114,7 +114,9 @@ async def expert_chat_stream(
                 message=req.message,
                 knowledge_base_id=expert.kb_id,
                 deep_research=req.deep_research,
-                web_search=False,
+                web_search=req.web_search,
+                arxiv=req.arxiv or req.deep_research,
+                semantic_scholar=req.semantic_scholar or req.deep_research,
                 file_tools=False,
                 external_mcp=False,
                 conversation_id=req.conversation_id,
@@ -124,6 +126,7 @@ async def expert_chat_stream(
                 session=session,
                 user_id=user_id,
                 expert_prompt=expert.system_prompt,
+                expert_id=expert.id,
             ):
                 yield line
 

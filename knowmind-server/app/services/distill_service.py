@@ -11,10 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models.orm import KnowledgeGap, RagRetrievalLog, UserFeedback, new_uuid
-from app.services.edgefn_client import complete_chat_turn
+from app.services.edgefn_client import complete_chat_turn, turn_visible_text
 from app.services.knowledge_category_service import ensure_default_category
 from app.services.knowledge_item_service import create_item
 from app.services.rag_logging_service import normalize_topic_key
+from app.utils.llm_json import parse_llm_json_array
 
 log = logging.getLogger(__name__)
 
@@ -29,8 +30,25 @@ class DistillError(Exception):
 def _thresholds() -> tuple[int, float, int]:
     s = get_settings()
     if getattr(s, "distill_demo_mode", True):
-        return (2, 0.6, 1)
+        # 演示模式也至少需要 3 次低命中，避免一两次误触发
+        return (3, 0.55, 2)
     return (5, 0.6, 3)
+
+
+def _unique_sample_queries(gap: KnowledgeGap) -> list[str]:
+    return list(dict.fromkeys(q.strip() for q in (gap.sample_queries or []) if q and str(q).strip()))
+
+
+def draft_limit_for_gap(gap: KnowledgeGap) -> int:
+    """按缺口证据量决定应生成的草稿条数，避免单问两次检索就产出多篇重复草稿。"""
+    unique = _unique_sample_queries(gap)
+    n_unique = len(unique)
+    hits = max(int(gap.hit_count or 0), n_unique)
+    if n_unique <= 1 or hits <= 2:
+        return 1
+    if n_unique == 2 or hits <= 4:
+        return 2
+    return min(3, n_unique)
 
 
 async def list_gaps(session: AsyncSession, user_id: str, kb_id: str) -> list[KnowledgeGap]:
@@ -165,28 +183,29 @@ async def generate_drafts_for_gap(
     if gap is None or gap.kb_id != kb_id or gap.user_id != user_id:
         raise DistillError("知识缺口不存在", 404)
 
-    queries = "\n".join(f"- {q}" for q in (gap.sample_queries or [])[:5])
-    prompt = f"""你是知识库编辑。用户多次提问但知识库检索命中质量低。请根据下列样例问题，生成 1-2 条**应写入知识库**的条目草稿。
-输出**仅** JSON 数组：
+    unique_queries = _unique_sample_queries(gap)
+    queries = "\n".join(f"- {q}" for q in unique_queries[:5])
+    draft_limit = draft_limit_for_gap(gap)
+    prompt = f"""你是知识库编辑。用户多次提问但知识库检索命中质量低。请根据下列样例问题，生成**恰好 {draft_limit} 条**应写入知识库**互不重复**的条目草稿。
+输出**仅** JSON 数组（长度必须为 {draft_limit}）：
 [{{"title":"...", "content":"...", "tags":["..."]}}]
-要求：content 为 Markdown，可独立理解，勿编造无依据细节，中文。
+要求：content 为 Markdown，可独立理解；样例问题若本质相同须合并为一条，勿编造无依据细节，中文。
 
-样例问题：
+样例问题（共 {len(unique_queries)} 个不同主题，检索样本 {int(gap.hit_count or 0)} 次）：
 {queries}
 """
     turn = await complete_chat_turn([{"role": "user", "content": prompt}])
-    text = (turn.content or "").strip()
-    m = re.search(r"\[[\s\S]*\]", text)
-    if not m:
+    text = turn_visible_text(turn) or (turn.content or turn.reasoning or "").strip()
+    drafts = parse_llm_json_array(text)
+    if drafts is None:
         raise DistillError("LLM 未返回有效草稿 JSON")
-    drafts = json.loads(m.group(0))
     if not isinstance(drafts, list):
         raise DistillError("草稿格式错误")
 
     cat = await ensure_default_category(session, user_id, kb_id)
     item_ids: list[str] = []
     out: list[dict] = []
-    for d in drafts[:3]:
+    for d in drafts[:draft_limit]:
         if not isinstance(d, dict):
             continue
         title = str(d.get("title") or "蒸馏草稿")[:200]

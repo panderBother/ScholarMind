@@ -178,10 +178,10 @@ export function KnowledgeItemDetailPage() {
         documentLabel = null;
       }
     }
-    const { title, message } = buildKnowledgeItemDeleteConfirm(item, documentLabel);
+    const { title, message: confirmMessage } = buildKnowledgeItemDeleteConfirm(item, documentLabel);
     const ok = await confirm({
       title,
-      message,
+      message: confirmMessage,
       confirmText: "删除",
       type: "danger",
     });

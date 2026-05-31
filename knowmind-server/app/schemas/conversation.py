@@ -17,6 +17,7 @@ class ConversationUpdate(BaseModel):
 class ConversationOut(BaseModel):
     id: str
     knowledge_base_id: str | None
+    expert_id: str | None = None
     deep_research: bool
     web_search: bool
     title: str | None

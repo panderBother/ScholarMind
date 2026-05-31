@@ -99,6 +99,7 @@ def _base_system_parts(
     deep_research: bool,
     web_search: bool,
     file_tools: bool,
+    external_mcp: bool = False,
 ) -> list[str]:
     parts: list[str] = [
         "你是 KnowMind 知识助手，回答简洁、可核对；优先使用 Markdown（标题、列表、代码块）。",
@@ -112,7 +113,42 @@ def _base_system_parts(
         )
     if file_tools:
         parts.append(FILE_TOOLS_SYSTEM_HINT)
+    if external_mcp:
+        parts.append(
+            "用户已启用「外部 MCP」远程工具。若用户请求绘图、文生图、图像生成或类似能力，"
+            "且 tools 列表中有匹配工具，请优先调用该工具完成，勿以「纯文字助手无法出图」为由拒绝；"
+            "将工具返回的图片链接、结构化结果整理后回复用户。",
+        )
     return parts
+
+
+def _append_merged_context(parts: list[str], ctx: str) -> None:
+    if "## 用户上传附件" in ctx:
+        parts.append(
+            "用户在本次消息中上传了附件（可能含图片 OCR/视觉分析、文档文本）。"
+            "请优先依据下列附件内容回答；若为图片，结合「文字内容」与「图像描述」作答，"
+            "勿编造未出现在附件中的细节。\n\n"
+            + ctx,
+        )
+    elif "## 联网搜索结果" in ctx:
+        parts.append(
+            "下列材料含知识库检索与/或联网搜索摘录。联网部分请优先用于回答网址、新闻、实时信息；"
+            "知识库部分用于文档与已上传资料。摘录不足时请明确说明，勿编造。\n\n"
+            + ctx,
+        )
+    elif "### 摘录" in ctx:
+        parts.append(
+            "用户已选择「知识库」。下列摘录来自其向量检索结果，请优先依据摘录作答；"
+            "引用时在句末标注 [1]、[2] 等编号（与「摘录 N」序号一致），或标明页码；"
+            "摘录不足以回答时请明确说明，勿编造文档细节。\n\n"
+            + ctx,
+        )
+    else:
+        parts.append(
+            "用户已关联知识库，但当前问题未检索到足够相关的摘录；请基于对话与常识作答，"
+            "勿编造文档细节，也不要标注 [1]、[2] 等知识库引用编号。\n\n"
+            + ctx,
+        )
 
 
 def build_chat_messages(
@@ -122,6 +158,7 @@ def build_chat_messages(
     web_search: bool,
     kb_context: str | None = None,
     file_tools: bool = False,
+    external_mcp: bool = False,
     expert_prompt: str | None = None,
 ) -> list[dict[str, str]]:
     if expert_prompt and expert_prompt.strip():
@@ -131,21 +168,11 @@ def build_chat_messages(
             deep_research=deep_research,
             web_search=web_search,
             file_tools=file_tools,
+            external_mcp=external_mcp,
         )
     ctx = (kb_context or "").strip()
     if ctx:
-        if "## 联网搜索结果" in ctx:
-            parts.append(
-                "下列材料含知识库检索与/或联网搜索摘录。联网部分请优先用于回答网址、新闻、实时信息；"
-                "知识库部分用于文档与已上传资料。摘录不足时请明确说明，勿编造。\n\n"
-                + ctx,
-            )
-        else:
-            parts.append(
-                "用户已选择「知识库」。下列摘录来自其向量检索结果，请优先依据摘录作答；"
-                "引用时请标明摘录序号或页码；摘录不足以回答时请明确说明，勿编造文档细节。\n\n"
-                + ctx,
-            )
+        _append_merged_context(parts, ctx)
     system = "\n\n".join(parts)
     return [
         {"role": "system", "content": system},
@@ -158,6 +185,7 @@ def build_chat_messages_multi(
     deep_research: bool,
     web_search: bool,
     file_tools: bool = False,
+    external_mcp: bool = False,
     kb_context: str | None,
     memory_summaries: str,
     memory_retrieval: str,
@@ -174,21 +202,11 @@ def build_chat_messages_multi(
             deep_research=deep_research,
             web_search=web_search,
             file_tools=file_tools,
+            external_mcp=external_mcp,
         )
     ctx = (kb_context or "").strip()
     if ctx:
-        if "## 联网搜索结果" in ctx:
-            parts.append(
-                "下列材料含知识库检索与/或联网搜索摘录。联网部分请优先用于回答网址、新闻、实时信息；"
-                "知识库部分用于文档与已上传资料。摘录不足时请明确说明，勿编造。\n\n"
-                + ctx,
-            )
-        else:
-            parts.append(
-                "用户已选择「知识库」。下列摘录来自其向量检索结果，请优先依据摘录作答；"
-                "引用时请标明摘录序号或页码；摘录不足以回答时请明确说明，勿编造文档细节。\n\n"
-                + ctx,
-            )
+        _append_merged_context(parts, ctx)
     summ = (memory_summaries or "").strip()
     if summ:
         parts.append("## 较早轮次摘要（系统自动生成，可能省略细节）\n\n" + summ)

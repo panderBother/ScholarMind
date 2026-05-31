@@ -53,7 +53,7 @@
 
 | Phase | 周次 | 交付物 | 完成标志（PRD） |
 |-------|------|--------|------------------|
-| Phase 1 | 第 1–2 周 | PDF 解析 + 论文感知切块 + 基础 RAG 问答 | 能上传论文并基于内容问答 |
+| Phase 1 | 第 1–2 周 | PDF 解析 + 文档感知切块 + 基础 RAG 问答 | 能上传论文并基于内容问答 |
 | Phase 2 | 第 3–4 周 | arXiv + Semantic Scholar MCP Server + 基础 Agent | Agent 能联网搜索 + 检索私有库 |
 | Phase 3 | 第 5–6 周 | Plan-and-Execute + 执行过程可视化 + 错误重试 | Agent 执行面板实时展示 |
 | Phase 4 | 第 7–8 周 | 完整 React 界面 + 引用溯源 + 报告导出 | 可演示完整用户流程 |

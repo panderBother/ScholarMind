@@ -239,11 +239,16 @@ def run_eval(*, dataset: str, use_ragas: bool, version: str) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run KnowMind RAG evaluation pipeline")
     parser.add_argument("--dataset", default="sample.jsonl", help="JSONL file under datasets/")
-    parser.add_argument("--use-ragas", action="store_true", help="Use RAGAS metrics (requires extra)")
+    parser.add_argument(
+        "--simple-only",
+        action="store_true",
+        help="Force simple token-overlap metrics (skip RAGAS)",
+    )
     parser.add_argument("--version", default="v2.1.0", help="Report version label")
     args = parser.parse_args()
+    use_ragas = not args.simple_only
 
-    payload = run_eval(dataset=args.dataset, use_ragas=args.use_ragas, version=args.version)
+    payload = run_eval(dataset=args.dataset, use_ragas=use_ragas, version=args.version)
     print(f"eval complete mode={payload['mode']} samples={payload['sample_count']}")
     print(f"wrote reports/latest.json and reports/{payload['run_id']}.json")
 

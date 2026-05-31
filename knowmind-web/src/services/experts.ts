@@ -1,7 +1,5 @@
-import { getAccessToken } from "@/services/auth";
+import { apiFetch, parseApiError } from "@/services/http";
 import type { ChatStreamHandlers, RagSourceDto } from "@/services/chat";
-
-const BASE = "/api/v1";
 
 export type ExpertDto = {
   id: string;
@@ -22,66 +20,44 @@ export type ExpertCreateBody = {
 export type ExpertChatBody = {
   message: string;
   deep_research?: boolean;
+  web_search?: boolean;
+  arxiv?: boolean;
+  semantic_scholar?: boolean;
   conversation_id?: string | null;
 };
 
-function authHeaders(json = false): HeadersInit {
-  const token = getAccessToken();
-  if (!token) throw new Error("未登录");
-  const h: HeadersInit = { Authorization: `Bearer ${token}` };
-  if (json) h["Content-Type"] = "application/json";
-  return h;
-}
-
-async function parseError(res: Response): Promise<string> {
-  try {
-    const j = (await res.json()) as { detail?: unknown };
-    const d = j.detail;
-    if (typeof d === "string") return d;
-    return res.statusText;
-  } catch {
-    return res.statusText;
-  }
-}
-
 export async function listExperts(kbId?: string): Promise<ExpertDto[]> {
   const sp = kbId ? `?kb_id=${encodeURIComponent(kbId)}` : "";
-  const res = await fetch(`${BASE}/experts${sp}`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await parseError(res));
+  const res = await apiFetch(`/experts${sp}`);
+  if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as ExpertDto[];
 }
 
 export async function getExpert(expertId: string): Promise<ExpertDto> {
-  const res = await fetch(`${BASE}/experts/${expertId}`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(await parseError(res));
+  const res = await apiFetch(`/experts/${expertId}`);
+  if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as ExpertDto;
 }
 
 export async function createExpert(body: ExpertCreateBody): Promise<ExpertDto> {
-  const res = await fetch(`${BASE}/experts`, {
+  const res = await apiFetch(`/experts`, {
     method: "POST",
-    headers: authHeaders(true),
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await parseError(res));
+  if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as ExpertDto;
 }
 
 export async function refreshExpert(expertId: string): Promise<ExpertDto> {
-  const res = await fetch(`${BASE}/experts/${expertId}/refresh`, {
-    method: "POST",
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await parseError(res));
+  const res = await apiFetch(`/experts/${expertId}/refresh`, { method: "POST" });
+  if (!res.ok) throw new Error(await parseApiError(res));
   return (await res.json()) as ExpertDto;
 }
 
 export async function deleteExpert(expertId: string): Promise<void> {
-  const res = await fetch(`${BASE}/experts/${expertId}`, {
-    method: "DELETE",
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error(await parseError(res));
+  const res = await apiFetch(`/experts/${expertId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await parseApiError(res));
 }
 
 /** 专家 Agent SSE 流式对话（与 chat/stream 事件格式一致） */
@@ -91,22 +67,22 @@ export async function streamExpertChat(
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(`${BASE}/experts/${expertId}/chat/stream`, {
+  const res = await apiFetch(`/experts/${expertId}/chat/stream`, {
     method: "POST",
-    headers: {
-      ...authHeaders(true),
-      Accept: "text/event-stream",
-    },
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify({
       message: body.message,
       deep_research: body.deep_research ?? false,
+      web_search: body.web_search ?? false,
+      arxiv: body.arxiv ?? body.deep_research ?? false,
+      semantic_scholar: body.semantic_scholar ?? body.deep_research ?? false,
       conversation_id: body.conversation_id ?? null,
     }),
     signal,
   });
 
   if (!res.ok) {
-    throw new Error(await parseError(res));
+    throw new Error(await parseApiError(res));
   }
 
   const reader = res.body?.getReader();
@@ -160,8 +136,14 @@ export async function streamExpertChat(
       if (sources.length) handlers.onRagSources?.(msg.kb_id, sources);
       return;
     }
-    if (msg.type === "done") handlers.onDone();
+    if (msg.type === "done") {
+      handlers.onDone();
+      return "done" as const;
+    }
+    return null;
   };
+
+  let finished = false;
 
   try {
     while (true) {
@@ -171,15 +153,32 @@ export async function streamExpertChat(
       const parts = carry.split("\n");
       carry = parts.pop() ?? "";
       for (const line of parts) {
-        if (line.startsWith("data:")) handleLine(line);
+        if (line.startsWith("data:")) {
+          if (handleLine(line) === "done") {
+            finished = true;
+            break;
+          }
+        }
+      }
+      if (finished) break;
+    }
+    if (!finished && carry.trim()) {
+      for (const line of carry.split("\n")) {
+        if (line.startsWith("data:")) {
+          if (handleLine(line) === "done") {
+            finished = true;
+            break;
+          }
+        }
       }
     }
-    if (carry.trim()) {
-      for (const line of carry.split("\n")) {
-        if (line.startsWith("data:")) handleLine(line);
-      }
+    if (!finished) {
+      handlers.onDone();
     }
   } finally {
+    if (finished) {
+      void reader.cancel().catch(() => undefined);
+    }
     reader.releaseLock();
   }
 }

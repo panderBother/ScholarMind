@@ -23,10 +23,9 @@ export function KnowledgeProductionPage() {
   const { message } = useUi();
   const tabParam = searchParams.get("tab");
   const tab: ProdTab = tabParam === "distill" ? "distill" : "url";
-  const kbFromQuery = searchParams.get("kb_id") ?? "";
 
   const [kbs, setKbs] = useState<KnowledgeBaseDto[]>([]);
-  const [kbId, setKbId] = useState(routeKbId || kbFromQuery || "");
+  const [kbId, setKbId] = useState(() => routeKbId || searchParams.get("kb_id") || "");
   const [categories, setCategories] = useState<{ id: string; label: string }[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [importTick, setImportTick] = useState(0);
@@ -40,61 +39,89 @@ export function KnowledgeProductionPage() {
     }
     const rows = await listKnowledgeBases();
     setKbs(rows);
-    setKbId((cur) => cur || routeKbId || kbFromQuery || rows[0]?.id || "");
-  }, [nav, routeKbId, kbFromQuery]);
-
-  useEffect(() => {
-    if (routeKbId && routeKbId !== kbId) {
-      setKbId(routeKbId);
-    }
-  }, [routeKbId, kbId]);
-
-  useEffect(() => {
-    if (isStandalone && kbFromQuery && kbFromQuery !== kbId) {
-      setKbId(kbFromQuery);
-    }
-  }, [isStandalone, kbFromQuery, kbId]);
-
-  const loadCategories = useCallback(async () => {
-    if (!kbId) return;
-    try {
-      const tree = await listCategoryTree(kbId);
-      setCategories(flattenCategoryTree(tree));
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "加载分类失败");
-    }
-  }, [kbId]);
+    setKbId((cur) => cur || routeKbId || rows[0]?.id || "");
+  }, [nav, routeKbId]);
 
   useEffect(() => {
     void loadKbs().catch((e) => setErr(e instanceof Error ? e.message : "加载失败"));
   }, [loadKbs]);
 
+  /** 从带 :kbId 的路由进入时，跟随路由参数（非下拉选择场景） */
+  useEffect(() => {
+    if (routeKbId) setKbId(routeKbId);
+  }, [routeKbId]);
+
+  const loadCategories = useCallback(async () => {
+    if (!kbId) {
+      setCategories([]);
+      return;
+    }
+    try {
+      const tree = await listCategoryTree(kbId);
+      setCategories(flattenCategoryTree(tree));
+    } catch (e) {
+      setCategories([]);
+      setErr(e instanceof Error ? e.message : "加载分类失败");
+    }
+  }, [kbId]);
+
   useEffect(() => {
     void loadCategories();
   }, [loadCategories]);
 
+  /** 独立页首次默认库时，补全 URL（不监听 searchParams，避免与下拉选择互相触发） */
   useEffect(() => {
-    if (!kbId) return;
-    if (isStandalone) {
-      const next = new URLSearchParams(searchParams);
-      let changed = false;
-      if (next.get("kb_id") !== kbId) {
+    if (!isStandalone || !kbId) return;
+    if (searchParams.get("kb_id") === kbId) return;
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
         next.set("kb_id", kbId);
-        changed = true;
-      }
-      if (next.get("tab") !== tab) {
-        next.set("tab", tab);
-        changed = true;
-      }
-      if (changed) setSearchParams(next, { replace: true });
-    } else if (routeKbId && kbId !== routeKbId) {
-      nav(`/knowledge-bases/${kbId}/production?tab=${tab}`, { replace: true });
-    }
-  }, [kbId, routeKbId, nav, tab, isStandalone, searchParams, setSearchParams]);
+        if (!next.get("tab")) next.set("tab", tab);
+        return next;
+      },
+      { replace: true },
+    );
+  }, [isStandalone, kbId, tab, setSearchParams]);
 
-  const setTab = (next: ProdTab) => {
-    setSearchParams({ tab: next }, { replace: true });
-  };
+  const handleKbChange = useCallback(
+    (nextKbId: string) => {
+      setKbId(nextKbId);
+      if (isStandalone) {
+        setSearchParams(
+          (prev) => {
+            const next = new URLSearchParams(prev);
+            next.set("kb_id", nextKbId);
+            if (!next.get("tab")) next.set("tab", tab);
+            return next;
+          },
+          { replace: true },
+        );
+      } else {
+        nav(`/knowledge-bases/${nextKbId}/production?tab=${tab}`, { replace: true });
+      }
+    },
+    [isStandalone, nav, setSearchParams, tab],
+  );
+
+  const setTab = useCallback(
+    (next: ProdTab) => {
+      if (isStandalone) {
+        setSearchParams(
+          (prev) => {
+            const params = new URLSearchParams(prev);
+            params.set("tab", next);
+            if (kbId) params.set("kb_id", kbId);
+            return params;
+          },
+          { replace: true },
+        );
+      } else if (kbId || routeKbId) {
+        nav(`/knowledge-bases/${kbId || routeKbId}/production?tab=${next}`, { replace: true });
+      }
+    },
+    [isStandalone, kbId, nav, routeKbId, setSearchParams],
+  );
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-4 pb-6 lg:p-8">
@@ -121,7 +148,7 @@ export function KnowledgeProductionPage() {
           目标知识库
           <select
             value={kbId}
-            onChange={(e) => setKbId(e.target.value)}
+            onChange={(e) => handleKbChange(e.target.value)}
             className="ml-0 mt-1 block min-w-[12rem] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm sm:ml-2 sm:mt-0 sm:inline-block"
           >
             {kbs.map((k) => (
