@@ -60,7 +60,6 @@ export function Sidebar() {
           </NavLink>
         ))}
       </nav>
-      <div className="border-t border-slate-100 p-3 text-xs text-slate-400">v0.1.0 原型</div>
     </aside>
   );
 }
