@@ -28,6 +28,17 @@ export function clearAccessToken(): void {
   localStorage.removeItem(REFRESH_TOKEN_KEY);
 }
 
+let sessionExpiredRedirecting = false;
+
+/** 登录失效：清除令牌并跳转登录页 */
+export function handleSessionExpired(): void {
+  if (sessionExpiredRedirecting) return;
+  if (typeof window !== "undefined" && window.location.pathname.startsWith("/login")) return;
+  sessionExpiredRedirecting = true;
+  clearAccessToken();
+  window.location.replace("/login");
+}
+
 export type UserPublic = {
   id: string;
   email: string;

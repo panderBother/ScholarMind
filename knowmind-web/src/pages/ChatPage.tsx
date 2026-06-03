@@ -138,7 +138,7 @@ export function ChatPage() {
   const [kbId, setKbId] = useState<string>("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [deepResearch, setDeepResearch] = useState(true);
+  const [deepResearch, setDeepResearch] = useState(false);
   const [webSearch, setWebSearch] = useState(false);
   const [arxiv, setArxiv] = useState(false);
   const [semanticScholar, setSemanticScholar] = useState(false);
@@ -411,8 +411,8 @@ export function ChatPage() {
           knowledge_base_id: kbId || null,
           deep_research: deepResearch,
           web_search: webSearch,
-          arxiv: arxiv || deepResearch,
-          semantic_scholar: semanticScholar || deepResearch,
+          arxiv,
+          semantic_scholar: semanticScholar,
           file_tools: fileTools,
           external_mcp: externalMcp,
           attachment_ids: sentAttachmentIds,
@@ -1149,26 +1149,24 @@ export function ChatPage() {
                 const next = !deepResearch;
                 setDeepResearch(next);
                 if (next) {
-                  setArxiv(true);
-                  setSemanticScholar(true);
-                  void setBuiltinMcpEnabled("arxiv", true).catch(() => undefined);
-                  void setBuiltinMcpEnabled("semantic_scholar", true).catch(() => undefined);
+                  setWebSearch(true);
+                  void setBuiltinMcpEnabled("web_search", true).catch(() => undefined);
                 }
               }} />
               <Toggle
                 label="arXiv"
-                on={arxiv || deepResearch}
+                on={arxiv}
                 onToggle={() => {
-                  const next = !(arxiv || deepResearch);
+                  const next = !arxiv;
                   setArxiv(next);
                   void setBuiltinMcpEnabled("arxiv", next).catch(() => undefined);
                 }}
               />
               <Toggle
                 label="S2 学术"
-                on={semanticScholar || deepResearch}
+                on={semanticScholar}
                 onToggle={() => {
-                  const next = !(semanticScholar || deepResearch);
+                  const next = !semanticScholar;
                   setSemanticScholar(next);
                   void setBuiltinMcpEnabled("semantic_scholar", next).catch(() => undefined);
                 }}

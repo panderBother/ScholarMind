@@ -1,14 +1,12 @@
 # KnowMind
 
-**KnowMind** 是一款 **AI Native 私有知识库平台**：用户注册登录后，可创建多个知识库、上传 PDF 文档并完成自动解析与索引，在对话页基于所选知识库进行 **Hybrid RAG 检索增强问答**，并将对话提炼为结构化条目、生成报告。工程上采用 **React（Vite + Tailwind）+ FastAPI** 单仓架构，覆盖账户鉴权、知识库与文档生命周期、向量 + 全文双索引、SSE 流式对话、MCP 工具集成等核心能力。
-
-> 功能边界、里程碑与验收标准以 **[PRD v2.0](docs/KnowMind_PRD_v2.0.md)**（[`KnowMind_PRD_v2.0.docx`](docs/KnowMind_PRD_v2.0.docx)）及 **[开发流程与步骤](docs/KnowMind_开发流程与步骤_v1.md)** 为准。
+**KnowMind** 是一款 **AI Native 私有知识库平台**：用户注册登录后，可创建多个知识库、上传 PDF 文档并完成自动解析与索引，在对话页基于所选知识库进行 **Hybrid RAG 检索增强问答**，并将对话提炼为结构化条目、生成报告。工程上采用 **React（Vite + Tailwind）+ FastAPI** 单仓架构。
 
 ---
 
 ## 界面预览
 
-> 在 Cursor / VS Code 中请用 **Markdown 预览** 查看截图：`Ctrl+Shift+V`（Mac：`Cmd+Shift+V`），或右上角点击预览图标。源码模式下只会看到路径，不会渲染图片。
+> 在 Cursor / VS Code 中请用 **Markdown 预览** 查看截图：`Ctrl+Shift+V`（Mac：`Cmd+Shift+V`），或右上角点击预览图标。
 
 ### 智能对话
 
@@ -42,7 +40,7 @@
 
 ### 评估看板
 
-RAGAS / 简易指标（忠实度、答案相关性、上下文召回 / 精准）趋势与版本对比；可通过 API 触发 `knowmind-eval` 流水线写入真实报告。
+RAGAS / 简易指标（忠实度、答案相关性、上下文召回 / 精准）趋势与版本对比；可通过 API 触发 `knowmind-eval` 流水线写入报告。
 
 ![评估看板](./assets/06-evaluation-dashboard.png)
 
@@ -54,18 +52,15 @@ RAGAS / 简易指标（忠实度、答案相关性、上下文召回 / 精准）
 
 ---
 
-## 产品定位
+## 功能概览
 
 | 维度 | 说明 |
 |------|------|
 | **产品目标** | 问题 → 私有 RAG（可选 MCP 扩展）→ 可核对、结构化的回答与报告 |
 | **典型用户** | 需要管理文档 / 笔记、希望对「自己的材料」提问并得到带依据回答的个人或团队 |
-| **技术原则** | FastAPI、异步任务、Chroma 向量 + Whoosh BM25、MCP、MySQL 多租户隔离 |
-| **当前阶段** | P0 纵向切片已贯通：账户 → 知识库 → 文档入库 → 对话 RAG（含可点击引用）→ 条目 / 报告 / 评估；深度研究多步编排、专家 Agent 等持续迭代 |
+| **技术栈** | FastAPI、Celery / 后台线程、Chroma 向量 + Whoosh BM25、MCP、MySQL 多租户隔离 |
 
----
-
-## 典型工作流
+### 典型工作流
 
 ```mermaid
 flowchart LR
@@ -89,16 +84,16 @@ flowchart LR
 
 | 目录 | 说明 |
 |------|------|
-| [`knowmind-server/`](knowmind-server/) | **FastAPI** 后端：JWT 鉴权与 Refresh、知识库 / 文档 / 条目 / 报告 API、PDF 解析任务、Chroma + Whoosh 索引、SSE 流式对话、MCP 工具 |
+| [`knowmind-server/`](knowmind-server/) | **FastAPI** 后端：JWT 鉴权、知识库 / 文档 / 条目 / 报告 API、PDF 解析、Chroma + Whoosh 索引、SSE 流式对话、MCP 工具 |
 | [`knowmind-web/`](knowmind-web/) | **React + Vite + Tailwind** 前端：登录、知识库、文档与条目、对话、报告、评估、工具、设置等页面 |
-| [`knowmind-mcp/`](knowmind-mcp/) | 内置 MCP 服务实现（联网搜索、arXiv、Semantic Scholar、文件读写等） |
+| [`knowmind-mcp/`](knowmind-mcp/) | 内置 MCP 服务（联网搜索、arXiv、Semantic Scholar、文件读写等） |
 | [`knowmind-eval/`](knowmind-eval/) | RAG 评估流水线（RAGAS + 简易回退指标） |
-| [`docs/`](docs/) | 工程文档：PRD、开发流程、对话记忆方案等 |
-| [`assets/`](assets/) | README 界面截图（与根目录 README 同级引用） |
+| [`docs/`](docs/) | 工程文档 |
+| [`assets/`](assets/) | README 界面截图 |
 
 ---
 
-## 已实现能力（截至当前代码）
+## 已实现功能
 
 ### 后端（`knowmind-server`）
 
@@ -106,10 +101,10 @@ flowchart LR
 |------|------|
 | **鉴权** | 邮箱注册 / 登录；JWT 访问令牌 + Refresh 续期 |
 | **知识库** | 创建、列表、重命名、删除（多租户按 `user_id` 隔离） |
-| **文档** | 多格式上传、列表、预览、删除、失败重试；本地存储抽象 |
+| **文档** | 多格式上传、列表、预览、删除、失败重试；本地存储 |
 | **解析流水线** | 文本抽取 → 切块 → Embedding（`bge` / `http` / `hash`）→ Chroma + Whoosh |
 | **知识条目** | 对话提炼、URL 采集、草稿 / 发布 / 归档生命周期 |
-| **对话** | `POST /api/v1/chat` 与 `/chat/stream`（SSE）；RAG 检索 + `rag_sources` 事件；深度研究多步预取；对话附件上传 |
+| **对话** | `POST /api/v1/chat` 与 `/chat/stream`（SSE）；RAG 检索 + `rag_sources` 事件；深度研究多步预取；对话附件上传；多轮会话记忆 |
 | **专家** | 领域专家人设 + 流式对话，支持学术检索开关 |
 | **报告** | 由对话生成结构化报告；导出 Markdown / PDF |
 | **评估** | 读 `knowmind-eval/reports`；`POST /evaluation/run` 触发流水线 |
@@ -133,23 +128,28 @@ flowchart LR
 
 对话与报告正文使用 **[Streamdown](https://streamdown.ai/)** + Shiki 代码高亮与 CJK 排版；全站 API 请求经 `apiFetch` 封装，**401 时自动 Refresh 重试**。
 
-### 规划中 / 未做
-
-- Google OAuth
-- 对象存储（OSS / S3）生产适配
-- Milvus 集群默认化、MCP 24h 结果缓存、对话附件 TTL 清理等运维增强
-
 ---
 
 ## 快速开始
 
-### 1. 准备环境
+### 环境要求
 
-- **MySQL 8.x**：创建数据库与用户
-- **Redis**（使用 Celery Worker 时）：默认 `redis://127.0.0.1:6379/0`
-- **EdgeFN（或兼容 OpenAI 的网关）**：对话与（可选）云端 Embeddings
+| 依赖 | 说明 |
+|------|------|
+| **MySQL 8.x** | 需提前创建数据库与用户 |
+| **Redis** | 使用 Celery Worker 时需要，默认 `redis://127.0.0.1:6379/0`；可用 Docker 启动（见下方） |
+| **EdgeFN（或兼容 OpenAI 的网关）** | 对话与（可选）云端 Embeddings |
+| **Node.js + pnpm** | 前端开发 |
+| **Python 3.11+ + uv** | 后端开发（推荐） |
 
-### 2. 后端
+### 1. 启动 Redis（可选，Celery 模式需要）
+
+```bash
+cd knowmind-server
+docker compose -f docker-compose.redis.yml up -d
+```
+
+### 2. 启动后端
 
 ```bash
 cd knowmind-server
@@ -162,10 +162,16 @@ uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 - API 文档：<http://127.0.0.1:8000/docs>
-- **不跑 Celery** 时：`.env` 设置 `INGEST_BACKGROUND_THREAD=true`
-- **跑 Celery** 时：另开终端执行 `uv run celery -A app.workers.celery_app worker -l info`，且 Worker 与 API 共用同一 `.env`
+- 健康检查：<http://127.0.0.1:8000/api/v1/health>
 
-### 3. 前端
+**解析任务两种模式（二选一）：**
+
+| 模式 | 配置 | 说明 |
+|------|------|------|
+| 后台线程（开发推荐） | `.env` 设置 `INGEST_BACKGROUND_THREAD=true` | 无需 Celery，解析在 API 进程内异步执行 |
+| Celery Worker | 保持默认，另开终端 | `uv run celery -A app.workers.celery_app worker -l info`，Worker 与 API 共用同一 `.env` |
+
+### 3. 启动前端
 
 ```bash
 cd knowmind-web
@@ -200,22 +206,22 @@ pnpm dev       # 默认 http://localhost:5173
 | `ARXIV_ENABLED` / `SEMANTIC_SCHOLAR_ENABLED` | 学术检索 MCP |
 | `CHAT_ATTACHMENT_ROOT` | 对话附件临时目录 |
 | `EVAL_REPORTS_DIR` | 评估报告 JSON 目录 |
-| `INGEST_BACKGROUND_THREAD` | `true` 时在本进程内异步解析（开发友好） |
+| `INGEST_BACKGROUND_THREAD` | `true` 时在本进程内异步解析 |
 | `REDIS_URL` / `CELERY_TASK_ALWAYS_EAGER` | Celery 任务队列 |
 
 **切勿**将真实 `.env` 或密钥提交到版本库。
 
 ---
 
-## 测试与质量
+## 测试
 
 ```bash
+# 后端
 cd knowmind-server
 uv sync --dev
 uv run pytest tests/ -q
-```
 
-```bash
+# 前端构建
 cd knowmind-web
 pnpm run build
 ```
@@ -224,13 +230,7 @@ pnpm run build
 
 ## 相关文档
 
-- [KnowMind PRD v2.0](docs/KnowMind_PRD_v2.0.md) — 产品需求规格
-- [KnowMind 开发流程与步骤 v1.2](docs/KnowMind_开发流程与步骤_v1.md) — 模块与里程碑映射
+- [KnowMind PRD v2.0](docs/KnowMind_PRD_v2.0.md)
+- [KnowMind 开发流程与步骤](docs/KnowMind_开发流程与步骤_v1.md)
 - [对话记忆与上下文技术方案](docs/KnowMind_对话记忆与上下文技术方案_v1.md)
 - [knowmind-server README](knowmind-server/README.md)
-
----
-
-## 许可证与贡献
-
-许可证以各子包声明为准。贡献前请阅读 PRD 与 `docs/` 下的流程文档，保持 **纵向切片** 与里程碑对齐。

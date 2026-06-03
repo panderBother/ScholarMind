@@ -1,4 +1,4 @@
-"""深度研究：按 Plan 顺序执行检索步骤，失败自动重试一次。"""
+"""深度研究：RAG 优先，其余检索步骤并行执行。"""
 
 from __future__ import annotations
 
@@ -18,25 +18,20 @@ from app.services.chat_prefetch import (
 
 MAX_RETRIES = 1
 
+_PARALLEL_STEPS = frozenset({"arxiv_search", "semantic_scholar", "web_search"})
 
-async def _retry_step(
-    step: str,
-    run: Callable[[], Awaitable[str]],
-    *,
-    emit: Callable[[dict], None],
-    agent_step_sse: Callable[..., dict],
-) -> str:
+
+async def _retry_fetch(run: Callable[[], Awaitable[str]]) -> str:
     last_err = ""
     for attempt in range(MAX_RETRIES + 1):
-        detail = "执行中…" if attempt == 0 else f"重试 ({attempt}/{MAX_RETRIES})…"
-        emit(agent_step_sse(step, status="running", detail=detail))
         try:
             return await run()
         except Exception as e:  # noqa: BLE001
             last_err = str(e)
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(0.3)
-    emit(agent_step_sse(step, status="error", detail=f"失败：{last_err}"))
+    if last_err:
+        raise RuntimeError(last_err)
     return ""
 
 
@@ -55,12 +50,18 @@ async def execute_deep_research_prefetch(
     fetch_web: Callable[[], Awaitable[str]],
 ) -> AsyncIterator[str | PrefetchResult]:
     plan = build_research_plan(req, user_id)
+    parallel_in_plan = [s for s in plan.steps if s in _PARALLEL_STEPS]
+    planner_detail = (
+        f"深度研究 {len(plan.steps)} 步：知识库优先，{' + '.join(parallel_in_plan) or '无'} 并行检索"
+        if parallel_in_plan
+        else f"深度研究 {len(plan.steps)} 步"
+    )
     yield sse_event(
         {
             "type": "agent_step",
             "step": "planner",
             "status": "done",
-            "detail": f"深度研究 {len(plan.steps)} 步：顺序执行",
+            "detail": planner_detail,
             "meta": {"goal": plan.goal, "steps": plan.steps, "notes": plan.notes},
         },
     )
@@ -75,64 +76,86 @@ async def execute_deep_research_prefetch(
     arxiv_md = ""
     s2_md = ""
 
-    for step in plan.steps:
-        if step == "rag_retrieval" and req.knowledge_base_id:
-
-            async def _load() -> str:
-                nonlocal kb_md
-                kb_md, hits = await load_rag()
-                rag_hits.clear()
-                rag_hits.extend(hits)
-                return kb_md
-
-            await _retry_step("rag_retrieval", _load, emit=emit, agent_step_sse=agent_step_sse)
+    if "rag_retrieval" in plan.steps and req.knowledge_base_id:
+        emit(agent_step_sse("rag_retrieval", status="running", detail="Hybrid RAG 检索中…"))
+        try:
+            kb_md, hits = await load_rag()
+            rag_hits.clear()
+            rag_hits.extend(hits)
+        except Exception as e:  # noqa: BLE001
+            emit(agent_step_sse("rag_retrieval", status="error", detail=f"失败：{e!s}"))
+        else:
             emit(rag_step_done(rag_hits, kb_markdown=kb_md, diag=rag_diag))
-        elif step == "arxiv_search" and want_arxiv(req, user_id):
-            arxiv_md = await _retry_step(
-                "arxiv_search",
-                lambda: fetch_arxiv_md(req, user_id),
-                emit=emit,
-                agent_step_sse=agent_step_sse,
-            )
-            emit(
-                agent_step_sse(
-                    "arxiv_search",
-                    status="done",
-                    detail="已注入 arXiv 结果" if arxiv_md.strip() else "无 arXiv 结果",
-                ),
-            )
-        elif step == "semantic_scholar" and want_semantic_scholar(req, user_id):
-            s2_md = await _retry_step(
-                "semantic_scholar",
-                lambda: fetch_semantic_scholar_md(req, user_id),
-                emit=emit,
-                agent_step_sse=agent_step_sse,
-            )
-            emit(
-                agent_step_sse(
-                    "semantic_scholar",
-                    status="done",
-                    detail="已注入 Semantic Scholar 结果" if s2_md.strip() else "无 S2 结果",
-                ),
-            )
-        elif step == "web_search" and want_web_search(req, user_id):
-            web_md = await _retry_step("web_search", fetch_web, emit=emit, agent_step_sse=agent_step_sse)
-            emit(
-                agent_step_sse(
-                    "web_search",
-                    status="done",
-                    detail="已注入联网结果" if web_md.strip() else "无联网结果",
-                ),
-            )
 
-    for line in lines:
-        yield line
+    parallel_jobs: list[tuple[str, Callable[[], Awaitable[str]]]] = []
+    if "arxiv_search" in plan.steps and want_arxiv(req, user_id):
+        parallel_jobs.append(("arxiv_search", lambda: fetch_arxiv_md(req, user_id)))
+    if "semantic_scholar" in plan.steps and want_semantic_scholar(req, user_id):
+        parallel_jobs.append(("semantic_scholar", lambda: fetch_semantic_scholar_md(req, user_id)))
+    if "web_search" in plan.steps and want_web_search(req, user_id):
+        parallel_jobs.append(("web_search", fetch_web))
 
-    attachment_md = ""
+    attachment_task: asyncio.Task[str] | None = None
     if user_id and req.attachment_ids:
         from app.services.chat_attachment_service import load_attachment_context_async
 
-        attachment_md = await load_attachment_context_async(user_id, req.attachment_ids)
+        emit(agent_step_sse("attachment_parse", status="running", detail="解析附件 / 识图中…"))
+        attachment_task = asyncio.create_task(load_attachment_context_async(user_id, req.attachment_ids))
+
+    if parallel_jobs:
+        for step, _ in parallel_jobs:
+            emit(agent_step_sse(step, status="running", detail="并行检索中…"))
+
+        async def _run_named(step: str, fetch: Callable[[], Awaitable[str]]) -> tuple[str, str, str | None]:
+            try:
+                return step, await _retry_fetch(fetch), None
+            except Exception as e:  # noqa: BLE001
+                return step, "", str(e)
+
+        results = await asyncio.gather(*(_run_named(step, fetch) for step, fetch in parallel_jobs))
+        done_labels = {
+            "arxiv_search": ("已注入 arXiv 结果", "无 arXiv 结果"),
+            "semantic_scholar": ("已注入 Semantic Scholar 结果", "无 S2 结果"),
+            "web_search": ("已注入联网结果", "无联网结果"),
+        }
+        for step, md, err in results:
+            if err:
+                emit(agent_step_sse(step, status="error", detail=f"失败：{err}"))
+                continue
+            ok_label, empty_label = done_labels.get(step, ("完成", "无结果"))
+            emit(
+                agent_step_sse(
+                    step,
+                    status="done",
+                    detail=ok_label if md.strip() else empty_label,
+                    meta={"injected": bool(md.strip())},
+                ),
+            )
+            if step == "arxiv_search":
+                arxiv_md = md
+            elif step == "semantic_scholar":
+                s2_md = md
+            elif step == "web_search":
+                web_md = md
+
+    attachment_md = ""
+    if attachment_task is not None:
+        try:
+            attachment_md = await attachment_task
+            has_att = bool(attachment_md.strip())
+            emit(
+                agent_step_sse(
+                    "attachment_parse",
+                    status="done",
+                    detail="附件已解析并注入上下文" if has_att else "附件解析无有效内容",
+                    meta={"injected": has_att},
+                ),
+            )
+        except Exception as e:  # noqa: BLE001
+            emit(agent_step_sse("attachment_parse", status="error", detail=f"失败：{e!s}"))
+
+    for line in lines:
+        yield line
 
     merged = merge_context_parts(kb_md, web_md, arxiv_md, s2_md, attachment_md)
     yield PrefetchResult(

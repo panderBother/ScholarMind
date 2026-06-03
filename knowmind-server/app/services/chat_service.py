@@ -141,6 +141,7 @@ async def _stream_prefetch_bundle(
     web_task: asyncio.Task[str] | None,
     arxiv_task: asyncio.Task[str] | None,
     s2_task: asyncio.Task[str] | None,
+    attachment_task: asyncio.Task[str] | None,
     rag_hits: list,
     rag_diag: dict,
 ) -> AsyncIterator[str | PrefetchResult]:
@@ -191,20 +192,27 @@ async def _stream_prefetch_bundle(
     async def _await_prefetch() -> PrefetchResult:
         nonlocal rag_hits
         nonlocal attachment_md
-        kb_from_rag = (kb_context or "").strip()
-        if rag_task is not None:
+
+        async def _get_rag() -> str:
+            if rag_task is None:
+                return (kb_context or "").strip()
             kb_from_rag, new_hits, diag = await rag_task
             rag_hits.clear()
             rag_hits.extend(new_hits)
             rag_diag.clear()
             rag_diag.update(diag)
-        web_md = await web_task if web_task is not None else ""
-        arxiv_md = await arxiv_task if arxiv_task is not None else ""
-        s2_md = await s2_task if s2_task is not None else ""
-        if user_id and req.attachment_ids:
-            from app.services.chat_attachment_service import load_attachment_context_async
+            return kb_from_rag
 
-            attachment_md = await load_attachment_context_async(user_id, req.attachment_ids)
+        async def _empty_str() -> str:
+            return ""
+
+        web_md, arxiv_md, s2_md, attachment_md, kb_from_rag = await asyncio.gather(
+            web_task if web_task is not None else _empty_str(),
+            arxiv_task if arxiv_task is not None else _empty_str(),
+            s2_task if s2_task is not None else _empty_str(),
+            attachment_task if attachment_task is not None else _empty_str(),
+            _get_rag(),
+        )
         merged = merge_context_parts(kb_from_rag, web_md, arxiv_md, s2_md, attachment_md)
         return PrefetchResult(
             merged_context=merged,
@@ -579,10 +587,15 @@ async def iter_chat_stream(
     web_task: asyncio.Task[str] | None = None
     arxiv_task: asyncio.Task[str] | None = None
     s2_task: asyncio.Task[str] | None = None
+    attachment_task: asyncio.Task[str] | None = None
     if user_id and req.knowledge_base_id:
         rag_task = asyncio.create_task(
             _load_kb_context_isolated(user_id, req.knowledge_base_id, req.message),
         )
+    if user_id and req.attachment_ids and not req.deep_research:
+        from app.services.chat_attachment_service import load_attachment_context_async
+
+        attachment_task = asyncio.create_task(load_attachment_context_async(user_id, req.attachment_ids))
     if _want_web_search(req, user_id) and not req.deep_research:
         web_task = asyncio.create_task(_fetch_web_markdown(req, user_id))
     if want_arxiv(req, user_id) and not req.deep_research:
@@ -600,6 +613,7 @@ async def iter_chat_stream(
             web_task=web_task,
             arxiv_task=arxiv_task,
             s2_task=s2_task,
+            attachment_task=attachment_task,
             rag_hits=rag_hits,
             rag_diag=rag_diag,
         ):

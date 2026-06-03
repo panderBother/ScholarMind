@@ -13,3 +13,8 @@ def test_extract_arxiv_ids() -> None:
 def test_format_arxiv_markdown_empty() -> None:
     md = format_arxiv_markdown({"items": []})
     assert "未找到" in md
+
+
+def test_format_arxiv_markdown_rate_limit() -> None:
+    md = format_arxiv_markdown({"items": [], "error": "429 Too Many Requests"})
+    assert "过于频繁" in md

@@ -246,8 +246,8 @@ export function ExpertChatPage() {
           message: text,
           deep_research: deepResearch,
           web_search: webSearch,
-          arxiv: arxiv || deepResearch,
-          semantic_scholar: semanticScholar || deepResearch,
+          arxiv,
+          semantic_scholar: semanticScholar,
           conversation_id: conversationId,
         },
         {
@@ -454,9 +454,8 @@ export function ExpertChatPage() {
             <label className="flex items-center gap-1.5">
               <input
                 type="checkbox"
-                checked={arxiv || deepResearch}
+                checked={arxiv}
                 onChange={(e) => setArxiv(e.target.checked)}
-                disabled={deepResearch}
                 className="rounded border-slate-300"
               />
               arXiv
@@ -464,9 +463,8 @@ export function ExpertChatPage() {
             <label className="flex items-center gap-1.5">
               <input
                 type="checkbox"
-                checked={semanticScholar || deepResearch}
+                checked={semanticScholar}
                 onChange={(e) => setSemanticScholar(e.target.checked)}
-                disabled={deepResearch}
                 className="rounded border-slate-300"
               />
               Semantic Scholar

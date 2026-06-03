@@ -1,4 +1,4 @@
-import { getAccessToken } from "@/services/auth";
+import { getAccessToken, handleSessionExpired } from "@/services/auth";
 import { apiFetch, parseApiError } from "@/services/http";
 
 export type DocumentDto = {
@@ -82,6 +82,7 @@ export function uploadDocumentsWithProgress(
   return new Promise((resolve, reject) => {
     const token = getAccessToken();
     if (!token) {
+      handleSessionExpired();
       reject(new Error("未登录"));
       return;
     }
@@ -96,6 +97,11 @@ export function uploadDocumentsWithProgress(
       }
     });
     xhr.addEventListener("load", () => {
+      if (xhr.status === 401) {
+        handleSessionExpired();
+        reject(new Error("登录已过期"));
+        return;
+      }
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
           resolve(JSON.parse(xhr.responseText) as DocumentUploadResult);

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import time
 import xml.etree.ElementTree as ET
 from typing import Any
 from urllib.parse import quote
@@ -17,6 +19,11 @@ _ARXIV_ID_RE = re.compile(
     r"(?:arxiv\.org/(?:abs|pdf)/)?(\d{4}\.\d{4,5}(?:v\d+)?|[a-z\-]+(?:\.[A-Z]{2})?/\d{7}(?:v\d+)?)",
     re.IGNORECASE,
 )
+_ARXIV_USER_AGENT = "KnowMind/1.0 (+https://github.com/knowmind; academic search)"
+_ARXIV_MIN_INTERVAL_SEC = 3.0
+_ARXIV_MAX_RETRIES = 3
+_last_arxiv_request_at = 0.0
+_arxiv_request_lock = asyncio.Lock()
 
 
 def extract_arxiv_ids(text: str) -> list[str]:
@@ -28,6 +35,49 @@ def extract_arxiv_ids(text: str) -> list[str]:
             seen.add(aid)
             out.append(aid)
     return out
+
+
+async def _wait_arxiv_rate_limit() -> None:
+    """arXiv 要求相邻请求至少间隔约 3 秒。"""
+    global _last_arxiv_request_at
+    async with _arxiv_request_lock:
+        now = time.monotonic()
+        wait = _ARXIV_MIN_INTERVAL_SEC - (now - _last_arxiv_request_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _last_arxiv_request_at = time.monotonic()
+
+
+async def _get_arxiv_feed(client: httpx.AsyncClient, url: str) -> httpx.Response:
+    last_exc: Exception | None = None
+    for attempt in range(_ARXIV_MAX_RETRIES):
+        await _wait_arxiv_rate_limit()
+        r = await client.get(url, headers={"User-Agent": _ARXIV_USER_AGENT})
+        if r.status_code == 429:
+            retry_after_raw = r.headers.get("Retry-After")
+            try:
+                retry_after = max(float(retry_after_raw), _ARXIV_MIN_INTERVAL_SEC) if retry_after_raw else None
+            except ValueError:
+                retry_after = None
+            delay = retry_after if retry_after is not None else _ARXIV_MIN_INTERVAL_SEC * (attempt + 1)
+            log.warning(
+                "arxiv rate limited (429), retry in %.1fs (attempt %s/%s)",
+                delay,
+                attempt + 1,
+                _ARXIV_MAX_RETRIES,
+            )
+            await asyncio.sleep(delay)
+            last_exc = httpx.HTTPStatusError(
+                "429 Too Many Requests",
+                request=r.request,
+                response=r,
+            )
+            continue
+        r.raise_for_status()
+        return r
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("arxiv request failed without response")
 
 
 async def search_arxiv(query: str, *, max_results: int = 5) -> dict[str, Any]:
@@ -49,8 +99,7 @@ async def search_arxiv(query: str, *, max_results: int = 5) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
-            r = await client.get(url, headers={"User-Agent": "KnowMind/1.0"})
-            r.raise_for_status()
+            r = await _get_arxiv_feed(client, url)
             root = ET.fromstring(r.text)
         for entry in root.findall("atom:entry", ATOM_NS):
             title = (entry.findtext("atom:title", default="", namespaces=ATOM_NS) or "").strip()
@@ -92,6 +141,8 @@ def format_arxiv_markdown(payload: dict[str, Any]) -> str:
     if not items:
         err = payload.get("error")
         if err:
+            if "429" in str(err):
+                return "## arXiv 检索\n\n（arXiv 请求过于频繁，请稍后再试。）"
             return f"## arXiv 检索\n\n（检索失败：{err}）"
         return "## arXiv 检索\n\n（未找到相关信息。）"
     lines = ["## arXiv 检索摘录", ""]

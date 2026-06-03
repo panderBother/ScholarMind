@@ -7,6 +7,7 @@ import {
   clearAccessToken,
   getAccessToken,
   getRefreshToken,
+  handleSessionExpired,
   storeAuthTokens,
 } from "@/services/auth";
 
@@ -67,9 +68,16 @@ export async function apiFetch(path: string, init: ApiFetchInit = {}): Promise<R
   }
   const url = path.startsWith("http") ? path : `${BASE}${path.startsWith("/") ? path : `/${path}`}`;
   const res = await fetch(url, { ...fetchInit, headers });
-  if (res.status !== 401 || skipAuth || _retried) return res;
+  if (res.status !== 401 || skipAuth) return res;
+  if (_retried) {
+    handleSessionExpired();
+    return res;
+  }
   const ok = await tryRefreshToken();
-  if (!ok) return res;
+  if (!ok) {
+    handleSessionExpired();
+    return res;
+  }
   return apiFetch(path, { ...init, _retried: true });
 }
 

@@ -45,7 +45,7 @@ def build_research_plan(req: ChatRequest, user_id: str | None) -> ResearchPlan:
     steps.append("memory_retrieval")
     steps.append("llm_generate")
 
-    notes = "将按序检索私有库与公开学术/网页资料，再综合生成可核对回答。"
+    notes = "将并行检索私有库与公开学术/网页资料，再综合生成可核对回答。"
     if not steps or steps == ["memory_retrieval", "llm_generate"]:
         notes = "未开启额外工具，将基于对话记忆与模型知识回答。"
 

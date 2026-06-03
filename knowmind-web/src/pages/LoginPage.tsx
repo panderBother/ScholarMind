@@ -155,20 +155,6 @@ export function LoginPage() {
               </button>
             </form>
 
-            <div className="my-6 flex items-center gap-3 text-xs text-slate-400">
-              <div className="h-px flex-1 bg-slate-200" />
-              或
-              <div className="h-px flex-1 bg-slate-200" />
-            </div>
-
-            <button
-              type="button"
-              className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              <span className="text-lg leading-none">G</span>
-              使用 Google 登录
-            </button>
-
             <div className="mt-8 flex flex-wrap justify-center gap-4 text-xs text-slate-500">
               <a className="hover:text-primary" href="#">
                 帮助中心
