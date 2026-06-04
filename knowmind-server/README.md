@@ -110,4 +110,4 @@ uv run pytest tests/ -q
 ## 相关文档
 
 - [项目根 README](../README.md)
-- [对话记忆与上下文技术方案](../docs/KnowMind_对话记忆与上下文技术方案_v1.md)
+- [设计技术方案](../docs/KnowMind_设计技术方案.md) · [架构方案](../docs/KnowMind_架构方案.md)

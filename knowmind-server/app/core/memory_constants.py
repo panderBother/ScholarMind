@@ -1,4 +1,4 @@
-"""对话记忆默认参数，与 docs/KnowMind_对话记忆与上下文技术方案_v1.md 对齐；可通过 Settings 覆盖。"""
+"""对话记忆默认参数，与 docs/KnowMind_设计技术方案.md §4.6 对齐；可通过 Settings 覆盖。"""
 
 # 最近进入模型上下文的「消息条数」上限（user/assistant 各算一条）
 MEMORY_RECENT_MESSAGE_COUNT = 8

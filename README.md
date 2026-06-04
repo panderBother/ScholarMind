@@ -230,7 +230,5 @@ pnpm run build
 
 ## 相关文档
 
-- [KnowMind PRD v2.0](docs/KnowMind_PRD_v2.0.md)
-- [KnowMind 开发流程与步骤](docs/KnowMind_开发流程与步骤_v1.md)
-- [对话记忆与上下文技术方案](docs/KnowMind_对话记忆与上下文技术方案_v1.md)
+- [**设计技术方案**](docs/KnowMind_设计技术方案.md) · [**架构方案**](docs/KnowMind_架构方案.md)
 - [knowmind-server README](knowmind-server/README.md)

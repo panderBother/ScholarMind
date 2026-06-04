@@ -14,7 +14,7 @@ from docx.shared import Cm, Pt, RGBColor
 from docx.enum.table import WD_TABLE_ALIGNMENT
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MD = ROOT / "docs" / "KnowMind_PRD_v2.0.md"
+DEFAULT_MD = ROOT / "docs" / "KnowMind_设计技术方案.md"
 
 
 def _set_cell_shading(cell, fill: str) -> None:
