@@ -169,7 +169,16 @@ uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 | 模式 | 配置 | 说明 |
 |------|------|------|
 | 后台线程（开发推荐） | `.env` 设置 `INGEST_BACKGROUND_THREAD=true` | 无需 Celery，解析在 API 进程内异步执行 |
-| Celery Worker | 保持默认，另开终端 | `uv run celery -A app.workers.celery_app worker -l info`，Worker 与 API 共用同一 `.env` |
+| Celery Worker | 保持默认，**另开终端** | 与 API 共用同一 `knowmind-server/.env` |
+
+**Celery Worker 启动（生产或不用后台线程时）：**
+
+```bash
+cd knowmind-server
+uv run python -m celery -A app.workers.celery_app.celery_app worker -l info
+```
+
+Windows PowerShell 同上；需已启动 Redis，且 `.env` 中 `INGEST_BACKGROUND_THREAD=false`。
 
 ### 3. 启动前端
 
