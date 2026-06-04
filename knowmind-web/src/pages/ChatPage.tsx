@@ -48,6 +48,7 @@ import {
 } from "@/services/distill";
 import { generateReportFromConversation } from "@/services/reports";
 import { mergeThinkingParts, partitionThinkingBlocks } from "@/utils/partitionThinking";
+import { randomId } from "@/utils/randomId";
 
 type FileToolLog = {
   tool: string;
@@ -387,12 +388,12 @@ export function ChatPage() {
     setInput("");
     setPendingAttachments([]);
     const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: randomId(),
       role: "user",
       content: trimmed,
       images: sentImages.length > 0 ? sentImages : undefined,
     };
-    const assistantId = crypto.randomUUID();
+    const assistantId = randomId();
     const assistantPlaceholder: ChatMessage = {
       id: assistantId,
       role: "assistant",

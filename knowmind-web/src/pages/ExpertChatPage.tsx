@@ -19,6 +19,7 @@ import {
 } from "@/services/conversations";
 import { getExpert, streamExpertChat, type ExpertDto } from "@/services/experts";
 import { mergeThinkingParts, partitionThinkingBlocks } from "@/utils/partitionThinking";
+import { randomId } from "@/utils/randomId";
 
 type Msg = {
   id: string;
@@ -230,10 +231,10 @@ export function ExpertChatPage() {
     if (!text || !expertId || loading) return;
     setInput("");
     setErr(null);
-    const assistantId = crypto.randomUUID();
+    const assistantId = randomId();
     setMessages((m) => [
       ...m,
-      { id: crypto.randomUUID(), role: "user", content: text },
+      { id: randomId(), role: "user", content: text },
       { id: assistantId, role: "assistant", content: "", streamFinal: false },
     ]);
     setLoading(true);
