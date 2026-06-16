@@ -130,6 +130,19 @@ flowchart LR
 
 ---
 
+## 生产部署（Docker，推荐）
+
+终端里手动跑 `uvicorn`，SSH 断开或进程退出服务就停。推荐用仓库根目录的 **Docker Compose**（自动重启、健康检查、启动时迁移）：
+
+```bash
+cp .env.docker.example .env.docker   # 改密码、JWT、EDGEFN_API_KEY
+docker compose --env-file .env.docker up -d --build
+```
+
+详见 [**Docker 部署说明**](docs/KnowMind_Docker部署.md)。
+
+---
+
 ## 快速开始
 
 ### 环境要求

@@ -1,0 +1,12 @@
+.git
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/.venv
+knowmind-web/node_modules
+knowmind-web/dist
+knowmind-server/data
+**/*.md
+!knowmind-server/README.md
+.cursor
+terminals

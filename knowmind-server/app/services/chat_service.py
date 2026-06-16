@@ -3,6 +3,7 @@ import json
 import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
@@ -290,6 +291,181 @@ def _mcp_tool_trace_sse(entry) -> dict:
     }
 
 
+@dataclass
+class _ExternalMcpTurnResult:
+    reasoning: str
+    content: str
+    traces: list
+    disc_errs: list[str]
+    tool_count: int
+    aborted: bool = False
+
+
+async def _iter_external_mcp_sse_events(
+    messages: list,
+    *,
+    user_id: str,
+) -> AsyncIterator[str | _ExternalMcpTurnResult]:
+    """连接/调用外部 MCP；执行期间经 queue 实时推送 tool_result 等 SSE。"""
+    from app.services.chat_external_mcp import (
+        McpToolFatalError,
+        McpToolTraceEntry,
+        complete_chat_with_external_mcp,
+        discover_external_mcp_tools,
+    )
+
+    queue: asyncio.Queue = asyncio.Queue()
+    sentinel = object()
+    turn_holder: list[_ExternalMcpTurnResult | None] = [None]
+
+    async def worker() -> None:
+        traces: list[McpToolTraceEntry] = []
+
+        async def on_tool(entry: McpToolTraceEntry) -> None:
+            traces.append(entry)
+            await queue.put(_mcp_tool_trace_sse(entry))
+
+        async def on_status(detail: str) -> None:
+            await queue.put(_agent_step_sse("external_mcp", status="running", detail=detail))
+
+        try:
+            discovery = await discover_external_mcp_tools(user_id)
+            tool_count = len(discovery.tools)
+            if discovery.discovery_errors and not discovery.tools:
+                err_msg = "外部 MCP 连接失败：" + "；".join(discovery.discovery_errors)
+                turn_holder[0] = _ExternalMcpTurnResult(
+                    reasoning="",
+                    content=f"**{err_msg}**",
+                    traces=[],
+                    disc_errs=discovery.discovery_errors,
+                    tool_count=0,
+                    aborted=True,
+                )
+                await queue.put({"type": "error", "message": err_msg})
+                return
+
+            if discovery.discovery_errors:
+                await queue.put(
+                    _agent_step_sse(
+                        "external_mcp",
+                        status="running",
+                        detail="部分 MCP 可用：" + "；".join(discovery.discovery_errors),
+                    ),
+                )
+
+            await queue.put(
+                _agent_step_sse(
+                    "external_mcp",
+                    status="running",
+                    detail=f"已发现 {tool_count} 个远程工具，调用中…" if tool_count else "未发现可用工具",
+                ),
+            )
+
+            result = await complete_chat_with_external_mcp(
+                messages,
+                user_id=user_id,
+                tool_bindings=discovery.tools,
+                on_tool=on_tool,
+                on_status=on_status,
+            )
+            turn_holder[0] = _ExternalMcpTurnResult(
+                reasoning=result.reasoning,
+                content=result.content,
+                traces=traces,
+                disc_errs=discovery.discovery_errors,
+                tool_count=tool_count,
+            )
+        except McpToolFatalError as exc:
+            err_msg = str(exc)
+            if exc.entry not in traces:
+                await queue.put(_mcp_tool_trace_sse(exc.entry))
+            turn_holder[0] = _ExternalMcpTurnResult(
+                reasoning="",
+                content=f"**MCP 工具调用失败** {err_msg}",
+                traces=traces,
+                disc_errs=[err_msg],
+                tool_count=len(traces),
+                aborted=True,
+            )
+            await queue.put({"type": "error", "message": err_msg})
+        except Exception as exc:  # noqa: BLE001
+            err_msg = f"外部 MCP 异常：{exc!s}"
+            turn_holder[0] = _ExternalMcpTurnResult(
+                reasoning="",
+                content=f"**{err_msg}**",
+                traces=traces,
+                disc_errs=[err_msg],
+                tool_count=0,
+                aborted=True,
+            )
+            await queue.put({"type": "error", "message": err_msg})
+        finally:
+            await queue.put(sentinel)
+
+    task = asyncio.create_task(worker())
+    while True:
+        item = await queue.get()
+        if item is sentinel:
+            break
+        yield _sse_event(item)
+    await task
+
+    if turn_holder[0] is None:
+        turn_holder[0] = _ExternalMcpTurnResult(
+            reasoning="",
+            content="（外部 MCP 异常终止）",
+            traces=[],
+            disc_errs=[],
+            tool_count=0,
+            aborted=True,
+        )
+    yield turn_holder[0]
+
+
+async def _consume_external_mcp_turn(
+    messages: list,
+    *,
+    user_id: str,
+    turn_out: list[_ExternalMcpTurnResult] | None = None,
+) -> AsyncIterator[str]:
+    """外部 MCP 分支：流式推送工具结果，失败时快速结束并下发 error。"""
+    turn: _ExternalMcpTurnResult | None = None
+    async for item in _iter_external_mcp_sse_events(messages, user_id=user_id):
+        if isinstance(item, _ExternalMcpTurnResult):
+            turn = item
+            if turn_out is not None:
+                turn_out.append(turn)
+        else:
+            yield item
+
+    if turn is None:
+        return
+
+    detail = f"已注册 {turn.tool_count} 个远程工具，执行 {len(turn.traces)} 次调用"
+    if turn.disc_errs:
+        detail += f"；{len(turn.disc_errs)} 个服务异常"
+    step_status = "error" if turn.aborted else "done"
+    yield _sse_event(_agent_step_sse("external_mcp", status=step_status, detail=detail))
+
+    if turn.aborted:
+        if turn.disc_errs:
+            yield _sse_event(_agent_step_sse("error", status="error", detail=turn.disc_errs[0]))
+        body = turn.content or "（外部 MCP 失败）"
+        for chunk in iter_text_chunks(body):
+            yield _sse_event({"type": "delta", "text": chunk})
+        return
+
+    if not turn.traces:
+        log_info("[external_mcp] %s", _external_mcp_noop_hint())
+    yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型生成中…"))
+    if turn.reasoning.strip():
+        for chunk in iter_text_chunks(turn.reasoning):
+            yield _sse_event({"type": "thinking_delta", "text": chunk})
+    body = turn.content or "（模型返回空正文）"
+    for chunk in iter_text_chunks(body):
+        yield _sse_event({"type": "delta", "text": chunk})
+
+
 async def _merge_web_search_context(
     req: ChatRequest,
     kb_context: str,
@@ -424,42 +600,6 @@ def _file_tools_noop_hint(req: ChatRequest) -> str:
     if has_write_intent(msg):
         return "未执行文件写入：请在同一条消息里写清路径（如 D:\\test\\a.md）和要保存的正文"
     return "未执行文件操作"
-
-
-async def _stream_external_mcp_turn(
-    messages: list,
-    *,
-    user_id: str,
-) -> tuple[str, str, list, list[str], int]:
-    from app.services.chat_external_mcp import (
-        McpToolTraceEntry,
-        complete_chat_with_external_mcp,
-        discover_external_mcp_tools,
-    )
-
-    discovery = await discover_external_mcp_tools(user_id)
-    traces: list[McpToolTraceEntry] = []
-
-    async def on_tool(entry: McpToolTraceEntry) -> None:
-        traces.append(entry)
-
-    result = await complete_chat_with_external_mcp(
-        messages,
-        user_id=user_id,
-        tool_bindings=discovery.tools,
-        on_tool=on_tool,
-    )
-    return (
-        result.reasoning,
-        result.content,
-        traces,
-        discovery.discovery_errors,
-        len(discovery.tools),
-    )
-
-
-def _yield_mcp_traces(traces: list) -> list[dict]:
-    return [_mcp_tool_trace_sse(t) for t in traces if t.ok]
 
 
 async def _stream_file_tools_turn(
@@ -688,24 +828,8 @@ async def iter_chat_stream(
                         _agent_step_sse("external_mcp", status="running", detail="连接远程 MCP 并发现工具…"),
                     )
                     log_info("[external_mcp] chat/stream 已启用")
-                    reasoning, content, mcp_traces, disc_errs, tool_count = await _stream_external_mcp_turn(
-                        messages,
-                        user_id=user_id,
-                    )
-                    detail = f"已注册 {tool_count} 个远程工具，执行 {len(mcp_traces)} 次调用"
-                    if disc_errs:
-                        detail += f"；{len(disc_errs)} 个服务连接失败"
-                    yield _sse_event(_agent_step_sse("external_mcp", status="done", detail=detail))
-                    for ev in _yield_mcp_traces(mcp_traces):
-                        yield _sse_event(ev)
-                    if not mcp_traces:
-                        log_info("[external_mcp] %s", _external_mcp_noop_hint())
-                    yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型生成中…"))
-                    if reasoning.strip():
-                        for chunk in iter_text_chunks(reasoning):
-                            yield _sse_event({"type": "thinking_delta", "text": chunk})
-                    for chunk in iter_text_chunks(content or "（模型返回空正文）"):
-                        yield _sse_event({"type": "delta", "text": chunk})
+                    async for sse_line in _consume_external_mcp_turn(messages, user_id=user_id):
+                        yield sse_line
             else:
                 yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型流式生成中…"))
                 if web_injected:
@@ -919,26 +1043,17 @@ async def iter_chat_stream(
                     _agent_step_sse("external_mcp", status="running", detail="连接远程 MCP 并发现工具…"),
                 )
                 log_info("[external_mcp] chat/stream(多轮) 已启用")
-                reasoning, content, mcp_traces, disc_errs, tool_count = await _stream_external_mcp_turn(
+                mcp_turn_box: list[_ExternalMcpTurnResult] = []
+                async for sse_line in _consume_external_mcp_turn(
                     messages,
                     user_id=user_id,
-                )
-                detail = f"已注册 {tool_count} 个远程工具，执行 {len(mcp_traces)} 次调用"
-                if disc_errs:
-                    detail += f"；{len(disc_errs)} 个服务连接失败"
-                yield _sse_event(_agent_step_sse("external_mcp", status="done", detail=detail))
-                for ev in _yield_mcp_traces(mcp_traces):
-                    yield _sse_event(ev)
-                if not mcp_traces:
-                    log_info("[external_mcp] %s", _external_mcp_noop_hint())
-                yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型生成中…"))
-                if reasoning.strip():
-                    for chunk in iter_text_chunks(reasoning):
-                        yield _sse_event({"type": "thinking_delta", "text": chunk})
-                body = content or "（模型返回空正文）"
-                assistant_body_parts.append(body)
-                for chunk in iter_text_chunks(body):
-                    yield _sse_event({"type": "delta", "text": chunk})
+                    turn_out=mcp_turn_box,
+                ):
+                    yield sse_line
+                if mcp_turn_box:
+                    t = mcp_turn_box[0]
+                    body = t.content or ("（外部 MCP 失败）" if t.aborted else "（模型返回空正文）")
+                    assistant_body_parts.append(body)
                 stream_ok = True
         else:
             yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型流式生成中…"))

@@ -23,10 +23,37 @@ from app.services.mcp_url_client import (
     bindings_to_openai_tools,
     call_tool,
     discover_all_tools,
+    mcp_tool_result_ok,
     parse_qualified_tool_name,
 )
 
 log = logging.getLogger(__name__)
+
+
+class McpToolFatalError(RuntimeError):
+    """MCP 连接/超时等不可恢复错误，应终止后续模型轮次。"""
+
+    def __init__(self, entry: "McpToolTraceEntry"):
+        self.entry = entry
+        err = entry.result.get("error") if isinstance(entry.result, dict) else None
+        super().__init__(str(err or "MCP 工具调用失败"))
+
+
+def _is_fatal_mcp_error(result: dict[str, Any]) -> bool:
+    err = str(result.get("error") or "")
+    low = err.lower()
+    return any(
+        k in low
+        for k in (
+            "timeout",
+            "readtimeout",
+            "connecttimeout",
+            "无法连接 mcp",
+            "无法连接",
+            "connection",
+            "connect failed",
+        )
+    )
 
 
 def _use_native_external_mcp_tools() -> bool:
@@ -151,6 +178,7 @@ async def _execute_mcp_tool_calls(
     servers: dict[str, Any],
     traces: list[McpToolTraceEntry],
     on_tool: Callable[[McpToolTraceEntry], Awaitable[None]] | None,
+    on_status: Callable[[str], Awaitable[None]] | None = None,
 ) -> list[str]:
     result_lines: list[str] = []
     for tc in tool_calls:
@@ -180,12 +208,14 @@ async def _execute_mcp_tool_calls(
                 server_name = binding_meta.server_name
             else:
                 try:
+                    if on_status is not None:
+                        await on_status(f"正在调用 {server.display_name}/{tool_name}…")
                     schema = binding_meta.parameters if binding_meta else {}
                     args_obj, coerce_notes = coerce_arguments_for_schema(args_obj, schema)
                     if coerce_notes:
                         log_info("[external_mcp] 参数已修正: %s", "; ".join(coerce_notes))
                     result = await call_tool(server, tool_name, args_obj)
-                    ok = not bool(result.get("isError")) and "error" not in result
+                    ok = mcp_tool_result_ok(result)
                     server_name = server.display_name
                     log_info("[external_mcp] 调用 %s/%s ok=%s", server_name, tool_name, ok)
                 except Exception as e:
@@ -205,6 +235,8 @@ async def _execute_mcp_tool_calls(
         traces.append(entry)
         if on_tool is not None:
             await on_tool(entry)
+        if not ok and _is_fatal_mcp_error(result):
+            raise McpToolFatalError(entry)
         result_lines.append(f"- {qualified}: {json.dumps(result, ensure_ascii=False)}")
     return result_lines
 
@@ -215,6 +247,7 @@ async def _complete_prompt(
     user_id: str,
     tool_bindings: list[McpToolBinding],
     on_tool: Callable[[McpToolTraceEntry], Awaitable[None]] | None,
+    on_status: Callable[[str], Awaitable[None]] | None = None,
 ) -> ChatWithExternalMcpResult:
     by_qualified = {b.openai_name: b for b in tool_bindings}
     servers = binding_by_id(user_id)
@@ -247,6 +280,7 @@ async def _complete_prompt(
             servers=servers,
             traces=traces,
             on_tool=on_tool,
+            on_status=on_status,
         )
         working.append({"role": "assistant", "content": combined})
         working.append(
@@ -271,6 +305,7 @@ async def _complete_native(
     user_id: str,
     tool_bindings: list[McpToolBinding],
     on_tool: Callable[[McpToolTraceEntry], Awaitable[None]] | None,
+    on_status: Callable[[str], Awaitable[None]] | None = None,
 ) -> ChatWithExternalMcpResult:
     openai_tools = bindings_to_openai_tools(tool_bindings)
     by_qualified = {b.openai_name: b for b in tool_bindings}
@@ -332,12 +367,14 @@ async def _complete_native(
                     server_name = binding_meta.server_name
                 else:
                     try:
+                        if on_status is not None:
+                            await on_status(f"正在调用 {server.display_name}/{tool_name}…")
                         schema = binding_meta.parameters if binding_meta else {}
                         args_obj, coerce_notes = coerce_arguments_for_schema(args_obj, schema)
                         if coerce_notes:
                             log_info("[external_mcp] 参数已修正: %s", "; ".join(coerce_notes))
                         result = await call_tool(server, tool_name, args_obj)
-                        ok = not bool(result.get("isError")) and "error" not in result
+                        ok = mcp_tool_result_ok(result)
                         server_name = server.display_name
                         log_info("[external_mcp] 调用 %s/%s ok=%s", server_name, tool_name, ok)
                     except Exception as e:
@@ -357,6 +394,8 @@ async def _complete_native(
             traces.append(entry)
             if on_tool is not None:
                 await on_tool(entry)
+            if not ok and _is_fatal_mcp_error(result):
+                raise McpToolFatalError(entry)
 
             working.append(
                 {
@@ -380,6 +419,7 @@ async def complete_chat_with_external_mcp(
     user_id: str,
     tool_bindings: list[McpToolBinding],
     on_tool: Callable[[McpToolTraceEntry], Awaitable[None]] | None = None,
+    on_status: Callable[[str], Awaitable[None]] | None = None,
 ) -> ChatWithExternalMcpResult:
     if not tool_bindings:
         turn = await complete_chat_turn(messages)
@@ -391,10 +431,28 @@ async def complete_chat_with_external_mcp(
     log_info("[external_mcp] tool_mode=%s", settings.external_mcp_tool_mode)
     if _use_native_external_mcp_tools():
         try:
-            return await _complete_native(messages, user_id=user_id, tool_bindings=tool_bindings, on_tool=on_tool)
+            return await _complete_native(
+                messages,
+                user_id=user_id,
+                tool_bindings=tool_bindings,
+                on_tool=on_tool,
+                on_status=on_status,
+            )
         except RuntimeError as e:
             if _is_edgefn_tool_choice_error(e):
                 log.warning("external_mcp native failed, fallback to prompt: %s", e)
-                return await _complete_prompt(messages, user_id=user_id, tool_bindings=tool_bindings, on_tool=on_tool)
+                return await _complete_prompt(
+                    messages,
+                    user_id=user_id,
+                    tool_bindings=tool_bindings,
+                    on_tool=on_tool,
+                    on_status=on_status,
+                )
             raise
-    return await _complete_prompt(messages, user_id=user_id, tool_bindings=tool_bindings, on_tool=on_tool)
+    return await _complete_prompt(
+        messages,
+        user_id=user_id,
+        tool_bindings=tool_bindings,
+        on_tool=on_tool,
+        on_status=on_status,
+    )

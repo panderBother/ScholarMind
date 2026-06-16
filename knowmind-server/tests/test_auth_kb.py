@@ -81,6 +81,49 @@ async def test_register_login_me_kb_flow(async_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_default_category_survives_after_list(async_client: AsyncClient) -> None:
+    """GET categories 自动创建的「未分类」必须 commit，否则后续入库报「分类不存在」。"""
+    reg = await async_client.post(
+        "/api/v1/auth/register",
+        json={"email": "cat@example.com", "password": "password123"},
+    )
+    assert reg.status_code == 200, reg.text
+    token = reg.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    create = await async_client.post(
+        "/api/v1/knowledge-bases",
+        headers=headers,
+        json={"name": "分类测试库"},
+    )
+    assert create.status_code == 201, create.text
+    kb_id = create.json()["id"]
+
+    listed = await async_client.get(
+        f"/api/v1/knowledge-bases/{kb_id}/categories",
+        headers=headers,
+    )
+    assert listed.status_code == 200, listed.text
+    tree = listed.json()
+    assert len(tree) >= 1
+    assert tree[0]["name"] == "未分类"
+    cat_id = tree[0]["id"]
+
+    imported = await async_client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/items/import-url",
+        headers=headers,
+        json={
+            "url": "https://example.com",
+            "category_id": cat_id,
+            "publish": False,
+            "title": "t",
+            "content": "body",
+        },
+    )
+    assert imported.status_code == 201, imported.text
+
+
+@pytest.mark.asyncio
 async def test_refresh_token_flow(async_client: AsyncClient) -> None:
     reg = await async_client.post(
         "/api/v1/auth/register",

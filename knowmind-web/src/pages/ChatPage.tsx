@@ -20,10 +20,11 @@ import {
   X,
 } from "lucide-react";
 import { AssistantMarkdown } from "@/components/AssistantMarkdown";
+import { ChatMediaGallery } from "@/components/ChatMediaGallery";
 import { useUi } from "@/components/ui/UiProvider";
 import { getAccessToken } from "@/services/auth";
 import { ChatRagSources } from "@/components/ChatRagSources";
-import { streamChatMessage, type ChatToolResult, type RagSourceDto } from "@/services/chat";
+import { streamChatMessage, type AgentStepEvent, type ChatToolResult, type RagSourceDto } from "@/services/chat";
 import { uploadChatAttachment, type ChatAttachmentDto } from "@/services/chatAttachments";
 import {
   type ConversationDto,
@@ -48,6 +49,14 @@ import {
 } from "@/services/distill";
 import { generateReportFromConversation } from "@/services/reports";
 import { mergeThinkingParts, partitionThinkingBlocks } from "@/utils/partitionThinking";
+import {
+  extractMediaFromText,
+  extractMediaFromToolResult,
+  mergeChatMedia,
+  shouldHideAssistantTextWhenMediaShown,
+  stripMediaFromAssistantContent,
+  type ChatMediaItem,
+} from "@/utils/extractToolResultMedia";
 import { randomId } from "@/utils/randomId";
 
 type FileToolLog = {
@@ -66,6 +75,10 @@ type ChatMessage = {
   streamFinal?: boolean;
   thinkingContent?: string;
   fileToolLogs?: FileToolLog[];
+  /** MCP 工具返回的图片 / 视频，直接内嵌展示 */
+  mediaItems?: ChatMediaItem[];
+  /** SSE agent_step 进度文案（连接 MCP、调用工具等） */
+  streamStatus?: string;
   ragSources?: RagSourceDto[];
   ragKbId?: string;
 };
@@ -73,6 +86,15 @@ type ChatMessage = {
 function summarizeToolResult(payload: ChatToolResult): string {
   const r = payload.result;
   if (!payload.ok && typeof r.error === "string") return r.error;
+  const media = extractMediaFromToolResult(r);
+  if (media.length) {
+    const images = media.filter((m) => m.type === "image").length;
+    const videos = media.filter((m) => m.type === "video").length;
+    const parts: string[] = [];
+    if (images) parts.push(`${images} 张图片`);
+    if (videos) parts.push(`${videos} 个视频`);
+    return `已生成 ${parts.join("、")}`;
+  }
   if (typeof r.path === "string") {
     const extra =
       payload.tool.startsWith("write") && typeof r.bytes_written === "number"
@@ -179,6 +201,14 @@ export function ChatPage() {
     );
   }, [loading, messages]);
 
+  const awaitingStatusText = useMemo(() => {
+    const last = messages[messages.length - 1];
+    if (last?.role === "assistant" && last.streamStatus?.trim()) {
+      return last.streamStatus;
+    }
+    return "正在等待回复…";
+  }, [messages]);
+
   const loadKbs = useCallback(async () => {
     if (!getAccessToken()) {
       nav("/login", { replace: true });
@@ -246,6 +276,7 @@ export function ChatPage() {
         content: m.content,
         trace_id: m.trace_id ?? undefined,
         streamFinal: true,
+        mediaItems: m.role === "assistant" ? extractMediaFromText(m.content) : undefined,
       }));
     });
   }, []);
@@ -404,7 +435,6 @@ export function ChatPage() {
     setLoading(true);
     let acc = "";
     let thinkingAcc = "";
-    let streamFailed = false;
     try {
       await streamChatMessage(
         {
@@ -428,6 +458,22 @@ export function ChatPage() {
           onConversationId: (cid) => {
             setConversationId(cid);
             setStoredConversationId(cid);
+          },
+          onAgentStep: (payload: AgentStepEvent) => {
+            const detail = payload.detail?.trim();
+            if (!detail) return;
+            const statusText =
+              payload.status === "error"
+                ? detail
+                : payload.status === "running"
+                  ? detail
+                  : undefined;
+            if (!statusText) return;
+            setMessages((m) =>
+              m.map((row) =>
+                row.id === assistantId ? { ...row, streamStatus: statusText } : row,
+              ),
+            );
           },
           onThinkingDelta: (chunk) => {
             thinkingAcc += chunk;
@@ -454,18 +500,34 @@ export function ChatPage() {
             );
           },
           onToolResult: (payload) => {
-            if (!payload.ok) return;
+            const media = extractMediaFromToolResult(payload.result);
+            const errText =
+              !payload.ok && typeof payload.result.error === "string" ? payload.result.error : null;
             const log: FileToolLog = {
               tool: payload.tool,
               ok: payload.ok,
-              summary: summarizeToolResult(payload),
+              summary: payload.ok
+                ? summarizeToolResult(payload)
+                : errText || "失败",
             };
             setMessages((m) =>
-              m.map((row) =>
-                row.id === assistantId
-                  ? { ...row, fileToolLogs: [...(row.fileToolLogs ?? []), log] }
-                  : row,
-              ),
+              m.map((row) => {
+                if (row.id !== assistantId) return row;
+                const existing = new Set((row.mediaItems ?? []).map((item) => item.url));
+                const merged = [...(row.mediaItems ?? [])];
+                for (const item of media) {
+                  if (!existing.has(item.url)) {
+                    existing.add(item.url);
+                    merged.push(item);
+                  }
+                }
+                return {
+                  ...row,
+                  fileToolLogs: [...(row.fileToolLogs ?? []), log],
+                  mediaItems: merged.length ? merged : row.mediaItems,
+                  streamStatus: payload.ok ? row.streamStatus : errText || "MCP 工具调用失败",
+                };
+              }),
             );
           },
           onRagSources: (ragKbId, sources) => {
@@ -476,7 +538,6 @@ export function ChatPage() {
             );
           },
           onError: (msg) => {
-            streamFailed = true;
             setErr(msg);
             const { thinking: tagThinking } = partitionThinkingBlocks(acc);
             const thinkingContent = mergeThinkingParts(thinkingAcc, tagThinking);
@@ -485,26 +546,33 @@ export function ChatPage() {
                 row.id === assistantId
                   ? {
                       ...row,
-                      content: `**调用失败** ${msg}`,
+                      content: acc.trim()
+                        ? acc
+                        : `**调用失败** ${msg}`,
                       streamFinal: true,
                       thinkingContent,
+                      streamStatus: msg,
                     }
                   : row,
               ),
             );
           },
           onDone: () => {
-            if (!streamFailed) {
-              const { visible, thinking: tagThinking } = partitionThinkingBlocks(acc);
-              const thinkingContent = mergeThinkingParts(thinkingAcc, tagThinking);
-              setMessages((m) =>
-                m.map((row) =>
-                  row.id === assistantId
-                    ? { ...row, content: visible, streamFinal: true, thinkingContent }
-                    : row,
-                ),
-              );
-            }
+            const { visible, thinking: tagThinking } = partitionThinkingBlocks(acc);
+            const thinkingContent = mergeThinkingParts(thinkingAcc, tagThinking);
+            setMessages((m) =>
+              m.map((row) =>
+                row.id === assistantId
+                  ? {
+                      ...row,
+                      content: visible.trim() || row.content,
+                      streamFinal: true,
+                      thinkingContent: thinkingContent || row.thinkingContent,
+                      streamStatus: undefined,
+                    }
+                  : row,
+              ),
+            );
             setLoading(false);
           },
         },
@@ -904,8 +972,16 @@ export function ChatPage() {
           </div>
         ) : null}
 
-        {messages.map((m) =>
-          m.role === "user" ? (
+        {messages.map((m) => {
+          const assistantMedia =
+            m.role === "assistant" ? mergeChatMedia(m.mediaItems, m.content) : [];
+          const assistantBody =
+            m.role === "assistant" ? stripMediaFromAssistantContent(m.content) : m.content;
+          const hideTextBelowMedia =
+            m.role === "assistant" &&
+            shouldHideAssistantTextWhenMediaShown(m.content, assistantMedia);
+
+          return m.role === "user" ? (
             <div
               key={m.id}
               className="ml-auto max-w-[90%] rounded-2xl rounded-br-md bg-primary px-3 py-2.5 text-sm text-white shadow lg:max-w-md lg:rounded-2xl lg:py-3"
@@ -938,6 +1014,8 @@ export function ChatPage() {
                   </span>
                 ) : null}
               </div>
+              {assistantMedia.length > 0 ? <ChatMediaGallery items={assistantMedia} /> : null}
+              {!hideTextBelowMedia ? (
               <div className="lg:hidden">
                 <button
                   type="button"
@@ -961,6 +1039,8 @@ export function ChatPage() {
                   )
                 ) : null}
               </div>
+              ) : null}
+              {!hideTextBelowMedia ? (
               <button
                 type="button"
                 onClick={() => setShowThought((v) => !v)}
@@ -969,7 +1049,9 @@ export function ChatPage() {
                 <span>思维链</span>
                 {showThought ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
               </button>
-              {showThought &&
+              ) : null}
+              {!hideTextBelowMedia &&
+                showThought &&
                 (m.thinkingContent ? (
                   <pre className="mb-3 hidden max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-slate-100 bg-slate-50/90 p-3 font-sans text-xs text-slate-600 lg:block">
                     {m.thinkingContent}
@@ -984,26 +1066,29 @@ export function ChatPage() {
               {m.ragSources && m.ragSources.length > 0 && m.ragKbId ? (
                 <ChatRagSources kbId={m.ragKbId} sources={m.ragSources} />
               ) : null}
-              {(m.fileToolLogs ?? []).some((log) => log.ok) ? (
+              {!hideTextBelowMedia && (m.fileToolLogs ?? []).length > 0 ? (
                 <ul className="mb-3 space-y-1.5 rounded-lg border border-emerald-100 bg-emerald-50/80 px-3 py-2 text-xs text-emerald-900">
-                  {(m.fileToolLogs ?? [])
-                    .filter((log) => log.ok)
-                    .map((log, i) => (
-                      <li key={`${log.tool}-${i}`} className="break-all">
-                        <span className="font-medium">{log.tool}</span>
-                        <span className="text-emerald-700"> · </span>
-                        {log.summary}
-                      </li>
-                    ))}
+                  {(m.fileToolLogs ?? []).map((log, i) => (
+                    <li
+                      key={`${log.tool}-${i}`}
+                      className={`break-all ${log.ok ? "" : "text-red-800"}`}
+                    >
+                      <span className="font-medium">{log.tool}</span>
+                      <span className={log.ok ? "text-emerald-700" : "text-red-600"}> · </span>
+                      {log.summary}
+                    </li>
+                  ))}
                 </ul>
               ) : null}
-              <AssistantMarkdown
-                markdown={m.content}
-                isStreaming={!(m.streamFinal ?? true)}
-                kbId={m.ragKbId}
-                citations={m.ragSources}
-              />
-              {(m.streamFinal ?? true) && m.content ? (
+              {!hideTextBelowMedia ? (
+                <AssistantMarkdown
+                  markdown={assistantBody}
+                  isStreaming={!(m.streamFinal ?? true)}
+                  kbId={m.ragKbId}
+                  citations={m.ragSources}
+                />
+              ) : null}
+              {(m.streamFinal ?? true) && assistantBody && !hideTextBelowMedia ? (
                 <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-2">
                   <button
                     type="button"
@@ -1015,13 +1100,13 @@ export function ChatPage() {
                 </div>
               ) : null}
             </div>
-          ),
-        )}
+          );
+        })}
 
         {awaitingFirstToken ? (
           <div className="flex items-center gap-2 text-sm text-slate-500">
             <Loader2 className="h-4 w-4 animate-spin text-primary" />
-            正在等待回复…
+            {awaitingStatusText}
           </div>
         ) : null}
 

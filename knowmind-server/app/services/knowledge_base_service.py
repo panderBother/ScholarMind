@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.orm import KnowledgeBase, KnowledgeItem, new_uuid
+from app.services.knowledge_category_service import ensure_default_category
 
 
 class KnowledgeBaseError(Exception):
@@ -59,6 +60,8 @@ async def create_knowledge_base(session: AsyncSession, user_id: str, name: str) 
 
     kb = KnowledgeBase(id=new_uuid(), user_id=user_id, name=name)
     session.add(kb)
+    await session.flush()
+    await ensure_default_category(session, user_id, kb.id)
     await session.commit()
     await session.refresh(kb)
     return kb

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { MarkdownPreview } from "@/components/MarkdownPreview";
+import { flattenCategoryTree, listCategoryTree } from "@/services/categories";
 import { importUrlItem, previewUrlItem, type UrlImportPreviewDto } from "@/services/distill";
 
 export type UrlImportCategory = { id: string; label: string };
@@ -26,6 +27,7 @@ type Props = {
 };
 
 export function UrlImportPanel({ kbId, categories, onImported, layout = "inline" }: Props) {
+  const [resolvedCategories, setResolvedCategories] = useState(categories);
   const [url, setUrl] = useState("");
   const [categoryId, setCategoryId] = useState(() => pickDefaultCategoryId(categories));
   const [publish, setPublish] = useState(true);
@@ -34,13 +36,32 @@ export function UrlImportPanel({ kbId, categories, onImported, layout = "inline"
   const [step, setStep] = useState<"form" | "preview">("form");
   const [preview, setPreview] = useState<UrlImportPreviewDto | null>(null);
 
-  /** 分类树异步加载完成后同步默认选中（避免界面显示「未分类」但 categoryId 仍为空） */
+  useEffect(() => {
+    setResolvedCategories(categories);
+  }, [categories]);
+
+  /** 打开面板时重新拉分类，避免使用未落库的「未分类」id */
+  useEffect(() => {
+    if (!kbId) return;
+    let cancelled = false;
+    void listCategoryTree(kbId)
+      .then((tree) => {
+        if (!cancelled) setResolvedCategories(flattenCategoryTree(tree));
+      })
+      .catch(() => {
+        /* 保留父组件传入的 categories */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [kbId]);
+
   useEffect(() => {
     setCategoryId((cur) => {
-      if (cur && categories.some((c) => c.id === cur)) return cur;
-      return pickDefaultCategoryId(categories);
+      if (cur && resolvedCategories.some((c) => c.id === cur)) return cur;
+      return pickDefaultCategoryId(resolvedCategories);
     });
-  }, [categories]);
+  }, [resolvedCategories]);
 
   const normalizeUrl = (raw: string) => {
     let normalized = raw.trim();
@@ -98,7 +119,7 @@ export function UrlImportPanel({ kbId, categories, onImported, layout = "inline"
     }
   };
 
-  if (!categories.length) {
+  if (!resolvedCategories.length) {
     return (
       <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
         正在加载分类…若长时间无响应，请确认该知识库已初始化（每个库会自动创建「未分类」）。
@@ -139,7 +160,7 @@ export function UrlImportPanel({ kbId, categories, onImported, layout = "inline"
               onChange={(e) => setCategoryId(e.target.value)}
               className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
             >
-              {categories.map((c) => (
+              {resolvedCategories.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.label}
                 </option>

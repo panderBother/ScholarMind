@@ -85,6 +85,7 @@ def _build_tree(rows: list[KnowledgeCategory]) -> list[dict]:
 
 
 async def list_category_tree(session: AsyncSession, user_id: str, kb_id: str) -> list[dict]:
+    """列出分类树；若自动创建「未分类」则提交事务（避免返回未落库的 id）。"""
     await ensure_default_category(session, user_id, kb_id)
     q = select(KnowledgeCategory).where(KnowledgeCategory.kb_id == kb_id).order_by(
         KnowledgeCategory.sort_order,
@@ -96,6 +97,7 @@ async def list_category_tree(session: AsyncSession, user_id: str, kb_id: str) ->
         await ensure_default_category(session, user_id, kb_id)
         r = await session.execute(q)
         rows = list(r.scalars().all())
+    await session.commit()
     return _build_tree(rows)
 
 

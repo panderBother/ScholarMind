@@ -31,20 +31,28 @@ function unwrapMarkdownFence(text: string): string | null {
   return inner.trimEnd();
 }
 
+const IMAGE_LINK =
+  /\[([^\]\n]*)\]\((https?:\/\/[^\s)]+?\.(?:png|jpe?g|webp|gif|bmp|svg|avif)(?:\?[^\s)]*)?)\)/gi;
+
+/** 将指向图片 URL 的 Markdown 链接转为内嵌图片，便于 MCP 结果在正文中直接展示 */
+function embedImageLinks(text: string): string {
+  return text.replace(IMAGE_LINK, (_match, alt: string, url: string) => `![${alt || "图片"}](${url})`);
+}
+
 export function prepareAssistantMarkdown(raw: string): string {
   const text = raw.replace(/\r\n/g, "\n");
 
   const unwrapped = unwrapMarkdownFence(text);
-  if (unwrapped !== null) return unwrapped;
+  if (unwrapped !== null) return embedImageLinks(unwrapped);
 
   const trimmed = text.trim();
   const plainOpen = trimmed.match(/^```\s*\n/);
   if (plainOpen && CLOSE_FENCE.test(trimmed)) {
     const inner = trimmed.slice(plainOpen[0].length).replace(CLOSE_FENCE, "");
     if (looksLikeMarkdownDoc(inner)) {
-      return inner.trimEnd();
+      return embedImageLinks(inner.trimEnd());
     }
   }
 
-  return text;
+  return embedImageLinks(text);
 }
