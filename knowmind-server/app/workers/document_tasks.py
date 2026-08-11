@@ -2,20 +2,30 @@ from __future__ import annotations
 
 import logging
 import threading
+import hashlib
+import uuid
+from collections import defaultdict, deque
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.db.sync_session import session_scope
-from app.ingest.chunking import chunk_settings_from_config, semantic_chunk_pages, semantic_chunk_text
+from app.ingest.chunking import (
+    TextChunk,
+    chunk_settings_from_config,
+    semantic_chunk_pages,
+    semantic_chunk_text,
+)
+from app.ingest.document_state import DocumentStatus, transition_document
 from app.ingest.embedding import embed_texts
 from app.ingest.registry import parse_file
 from app.ingest.types import FileType, PageText
 from app.indexing.vector_factory import get_vector_index
 from app.indexing.whoosh_index import whoosh_upsert_chunks
-from app.models.orm import Document, KnowledgeBase, KnowledgeItem, new_uuid
-from app.services.item_indexing import build_index_row, remove_index_for_document
+from app.models.orm import Document, DocumentChunk, KnowledgeBase, KnowledgeItem, new_uuid
+from app.services.item_indexing import build_index_row, remove_index_chunks
 from app.services.knowledge_category_service import get_or_create_default_category_sync
 from app.storage.local import LocalBlobStorage
 from app.utils.db_text import clamp_mediumtext
@@ -28,7 +38,9 @@ _ingest_serial_holder: list[threading.BoundedSemaphore | None] = [None]
 
 def _ingest_serial_lock() -> threading.BoundedSemaphore:
     if _ingest_serial_holder[0] is None:
-        _ingest_serial_holder[0] = threading.BoundedSemaphore(max(1, min(8, get_settings().ingest_max_parallel)))
+        _ingest_serial_holder[0] = threading.BoundedSemaphore(
+            max(1, min(8, get_settings().ingest_max_parallel))
+        )
     return _ingest_serial_holder[0]
 
 
@@ -47,9 +59,12 @@ def _fail(document_id: str, message: str) -> None:
         doc = s.get(Document, document_id)
         if doc is None:
             return
-        doc.status = "failed"
-        doc.error_message = message[:4000]
-        doc.parse_stage = "失败"
+        transition_document(
+            doc,
+            DocumentStatus.FAILED,
+            stage="失败",
+            error=message,
+        )
 
 
 def _reopen_pending(document_id: str) -> None:
@@ -60,20 +75,71 @@ def _reopen_pending(document_id: str) -> None:
             if doc is None:
                 return
             if doc.status == "processing":
-                doc.status = "pending"
-                doc.parse_progress = 0
-                doc.parse_stage = "排队中"
+                transition_document(
+                    doc,
+                    DocumentStatus.PENDING,
+                    progress=0,
+                    stage="排队中",
+                )
                 log.warning("ingest %s: reset pending after error (was processing)", document_id)
     except Exception:
         log.exception("ingest %s: failed to reset pending", document_id)
 
 
-def _purge_document_items(doc_pk: str) -> None:
-    """删除文档旧条目（兼容此前「一块一条目」数据）。"""
-    with session_scope() as s:
-        rows = s.execute(select(KnowledgeItem).where(KnowledgeItem.document_id == doc_pk))
-        for item in rows.scalars().all():
-            s.delete(item)
+def _chunk_hash(text: str, page: int) -> str:
+    body = f"{int(page)}\0{(text or '').strip()}".encode("utf-8")
+    return hashlib.sha256(body).hexdigest()
+
+
+@dataclass(frozen=True)
+class IncrementalChunkAssignment:
+    chunk: TextChunk
+    chunk_id: str
+    content_hash: str
+    requires_embedding: bool
+
+
+def plan_incremental_chunks(
+    *,
+    document_id: str,
+    new_chunks: list[TextChunk],
+    old_chunks: list[DocumentChunk],
+) -> tuple[list[IncrementalChunkAssignment], list[str]]:
+    reusable: dict[str, deque[DocumentChunk]] = defaultdict(deque)
+    for old in old_chunks:
+        reusable[old.content_hash].append(old)
+
+    assignments: list[IncrementalChunkAssignment] = []
+    reused_ids: set[str] = set()
+    hash_occurrences: dict[str, int] = defaultdict(int)
+    for chunk in new_chunks:
+        content_hash = _chunk_hash(chunk.text, chunk.page)
+        matched = reusable[content_hash].popleft() if reusable[content_hash] else None
+        occurrence = hash_occurrences[content_hash]
+        hash_occurrences[content_hash] += 1
+        chunk_id = (
+            matched.chunk_id
+            if matched is not None
+            else str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"knowmind:{document_id}:{content_hash}:{occurrence}",
+                )
+            )
+        )
+        if matched is not None:
+            reused_ids.add(chunk_id)
+        assignments.append(
+            IncrementalChunkAssignment(
+                chunk=chunk,
+                chunk_id=chunk_id,
+                content_hash=content_hash,
+                requires_embedding=matched is None,
+            )
+        )
+
+    removed_ids = [old.chunk_id for old in old_chunks if old.chunk_id not in reused_ids]
+    return assignments, removed_ids
 
 
 def _extract_full_text(
@@ -164,9 +230,12 @@ def process_document_once(document_id: str) -> bool:
             log.warning("ingest %s: unexpected status=%s, skip", document_id, doc.status)
             return False
         if doc.status == "pending":
-            doc.status = "processing"
-            doc.parse_progress = 5
-            doc.parse_stage = "开始解析"
+            transition_document(
+                doc,
+                DocumentStatus.PROCESSING,
+                progress=5,
+                stage="开始解析",
+            )
         kb_id = doc.kb_id
         user_id = doc.user_id
         storage_key = doc.storage_key
@@ -176,9 +245,15 @@ def process_document_once(document_id: str) -> bool:
         parsed_content = doc.parsed_content
         file_type_str = doc.file_type
         doc_title = doc.title
-
-    remove_index_for_document(doc_pk)
-    _purge_document_items(doc_pk)
+        old_chunks = list(
+            s.scalars(
+                select(DocumentChunk)
+                .where(DocumentChunk.document_id == doc_pk)
+                .order_by(DocumentChunk.ordinal.asc())
+            ).all()
+        )
+        old_item = s.scalar(select(KnowledgeItem).where(KnowledgeItem.document_id == doc_pk))
+        old_item_id = old_item.id if old_item is not None else None
 
     settings = get_settings()
     storage = LocalBlobStorage(settings.storage_local_root)
@@ -200,59 +275,49 @@ def process_document_once(document_id: str) -> bool:
 
     index_chunks = _semantic_index_chunks(full_text=full_text, pages=pages)
     _set_progress(document_id, 45, f"语义切块 {len(index_chunks)} 段")
-    log.info("ingest %s: index_chunks=%s embedding", document_id, len(index_chunks))
-    texts = [ch.text for ch in index_chunks]
-    vectors = _embed_with_progress(document_id, texts)
     now = datetime.now(UTC)
-    rows: list[dict] = []
 
     with session_scope() as s:
         default_category_id = get_or_create_default_category_sync(s, kb_id, user_id)
 
     base_name = (parsed_title or parse_title or filename or "document").rsplit(".", 1)[0][:80]
-    item_id = new_uuid()
-    first_chunk_id: str | None = None
+    item_id = old_item_id or new_uuid()
 
-    for ch, vec in zip(index_chunks, vectors, strict=True):
-        cid = new_uuid()
-        if first_chunk_id is None:
-            first_chunk_id = cid
+    assignments, removed_ids = plan_incremental_chunks(
+        document_id=doc_pk,
+        new_chunks=index_chunks,
+        old_chunks=old_chunks,
+    )
+    changed = [entry for entry in assignments if entry.requires_embedding]
+    reused_count = len(assignments) - len(changed)
+    changed_vectors = _embed_with_progress(document_id, [entry.chunk.text for entry in changed])
+    rows: list[dict] = []
+    for assignment, vector in zip(changed, changed_vectors, strict=True):
         rows.append(
             build_index_row(
-                chunk_id=cid,
+                chunk_id=assignment.chunk_id,
                 kb_id=kb_id,
                 user_id=user_id,
                 doc_id=doc_pk,
                 item_id=item_id,
-                page=ch.page,
-                text=ch.text,
-                vector=vec,
+                page=assignment.chunk.page,
+                text=assignment.chunk.text,
+                vector=vector,
                 lifecycle_status="published",
             )
         )
+    first_chunk_id = assignments[0].chunk_id if assignments else None
 
-    item_record = KnowledgeItem(
-        id=item_id,
-        kb_id=kb_id,
-        user_id=user_id,
-        document_id=doc_pk,
-        category_id=default_category_id,
-        source_type="document",
-        title=base_name[:200],
-        content=clamp_mediumtext(full_text) or full_text[:8000],
-        summary=(parsed_title or parse_title or base_name)[:500] if (parsed_title or parse_title) else None,
-        lifecycle_status="published",
-        access_level="internal",
-        source=filename,
-        chunk_id=first_chunk_id,
-        page=0,
-        published_at=now,
+    _set_progress(
+        document_id,
+        90,
+        f"增量索引 新增/修改 {len(rows)}，复用 {reused_count}，删除 {len(removed_ids)}",
     )
-
-    _set_progress(document_id, 90, "写入索引")
-    log.info("ingest %s: upserting %s index segments", document_id, len(rows))
-    get_vector_index().upsert_chunks(rows)
-    whoosh_upsert_chunks(settings.whoosh_index_root, rows)
+    if removed_ids:
+        remove_index_chunks(removed_ids)
+    if rows:
+        get_vector_index().upsert_chunks(rows)
+        whoosh_upsert_chunks(settings.whoosh_index_root, rows)
 
     title: str | None = parsed_title or parse_title
     if not title and full_text:
@@ -263,22 +328,74 @@ def process_document_once(document_id: str) -> bool:
         if doc is None:
             log.error("ingest %s: document vanished before commit done", document_id)
             return False
-        doc.status = "done"
-        doc.chunk_count = len(rows)
-        doc.parse_progress = 100
-        doc.parse_stage = "完成"
+        transition_document(
+            doc,
+            DocumentStatus.DONE,
+            progress=100,
+            stage="完成",
+        )
+        doc.chunk_count = len(assignments)
         if title:
             doc.title = title
         if parsed_content is None or not (doc.parsed_content or "").strip():
             doc.parsed_content = clamp_mediumtext(full_text)
         if parsed_title is None and title:
             doc.parsed_title = title[:512]
-        s.add(item_record)
+        item_record = s.get(KnowledgeItem, item_id) if old_item_id else None
+        if item_record is None:
+            item_record = KnowledgeItem(
+                id=item_id,
+                kb_id=kb_id,
+                user_id=user_id,
+                document_id=doc_pk,
+                category_id=default_category_id,
+                source_type="document",
+                lifecycle_status="published",
+                access_level="internal",
+                page=0,
+                published_at=now,
+            )
+            s.add(item_record)
+        item_record.title = base_name[:200]
+        item_record.content = clamp_mediumtext(full_text) or full_text[:8000]
+        item_record.summary = (
+            (parsed_title or parse_title or base_name)[:500]
+            if (parsed_title or parse_title)
+            else None
+        )
+        item_record.source = filename
+        item_record.chunk_id = first_chunk_id
+
+        existing_rows = list(
+            s.scalars(select(DocumentChunk).where(DocumentChunk.document_id == doc_pk)).all()
+        )
+        for existing in existing_rows:
+            s.delete(existing)
+        s.flush()
+        for ordinal, assignment in enumerate(assignments):
+            s.add(
+                DocumentChunk(
+                    document_id=doc_pk,
+                    chunk_id=assignment.chunk_id,
+                    content_hash=assignment.content_hash,
+                    ordinal=ordinal,
+                    page=assignment.chunk.page,
+                    text=assignment.chunk.text,
+                )
+            )
         kb = s.get(KnowledgeBase, doc.kb_id)
-        if kb is not None:
+        if kb is not None and old_item_id is None:
             kb.doc_count = int(kb.doc_count or 0) + 1
 
-    log.info("ingest %s: status=done item=%s segments=%s", document_id, item_id, len(rows))
+    log.info(
+        "ingest %s: status=done item=%s total=%s changed=%s reused=%s removed=%s",
+        document_id,
+        item_id,
+        len(assignments),
+        len(rows),
+        reused_count,
+        len(removed_ids),
+    )
     return True
 
 

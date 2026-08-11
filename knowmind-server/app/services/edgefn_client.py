@@ -127,27 +127,23 @@ def _append_merged_context(parts: list[str], ctx: str) -> None:
         parts.append(
             "用户在本次消息中上传了附件（可能含图片 OCR/视觉分析、文档文本）。"
             "请优先依据下列附件内容回答；若为图片，结合「文字内容」与「图像描述」作答，"
-            "勿编造未出现在附件中的细节。\n\n"
-            + ctx,
+            "勿编造未出现在附件中的细节。\n\n" + ctx,
         )
     elif "## 联网搜索结果" in ctx:
         parts.append(
             "下列材料含知识库检索与/或联网搜索摘录。联网部分请优先用于回答网址、新闻、实时信息；"
-            "知识库部分用于文档与已上传资料。摘录不足时请明确说明，勿编造。\n\n"
-            + ctx,
+            "知识库部分用于文档与已上传资料。摘录不足时请明确说明，勿编造。\n\n" + ctx,
         )
     elif "### 摘录" in ctx:
         parts.append(
             "用户已选择「知识库」。下列摘录来自其向量检索结果，请优先依据摘录作答；"
             "引用时在句末标注 [1]、[2] 等编号（与「摘录 N」序号一致），或标明页码；"
-            "摘录不足以回答时请明确说明，勿编造文档细节。\n\n"
-            + ctx,
+            "摘录不足以回答时请明确说明，勿编造文档细节。\n\n" + ctx,
         )
     else:
         parts.append(
             "用户已关联知识库，但当前问题未检索到足够相关的摘录；请基于对话与常识作答，"
-            "勿编造文档细节，也不要标注 [1]、[2] 等知识库引用编号。\n\n"
-            + ctx,
+            "勿编造文档细节，也不要标注 [1]、[2] 等知识库引用编号。\n\n" + ctx,
         )
 
 
@@ -188,6 +184,7 @@ def build_chat_messages_multi(
     external_mcp: bool = False,
     kb_context: str | None,
     memory_summaries: str,
+    working_memory: str,
     memory_retrieval: str,
     history_pairs: list[tuple[str, str]],
     expert_prompt: str | None = None,
@@ -210,6 +207,9 @@ def build_chat_messages_multi(
     summ = (memory_summaries or "").strip()
     if summ:
         parts.append("## 较早轮次摘要（系统自动生成，可能省略细节）\n\n" + summ)
+    facts = (working_memory or "").strip()
+    if facts:
+        parts.append("## 会话工作记忆（从用户明确表达中提取，仅作为辅助上下文）\n\n" + facts)
     retr = (memory_retrieval or "").strip()
     if retr:
         parts.append("## 相关历史摘录（来自本会话向量检索）\n\n" + retr)

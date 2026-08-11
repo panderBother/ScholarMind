@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.ingest.registry import detect_file_type, parse_file, requires_preview
+from app.ingest.document_state import DocumentStatus, transition_document
 from app.ingest.types import SUPPORTED_EXTENSIONS, FileType
 from app.models.orm import Document, KnowledgeBase, KnowledgeItem, new_uuid
 from app.schemas.document import (
@@ -45,7 +46,9 @@ def _validate_file_magic(data: bytes, file_type: FileType, filename: str) -> Non
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"不是有效 PDF：{filename}")
     if file_type in (FileType.DOCX, FileType.XLSX) and not data.startswith(ZIP_MAGIC):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"不是有效 {ext} 文件：{filename}")
-    if file_type == FileType.DOC and not (data.startswith(b"\xd0\xcf\x11\xe0") or data[:4] == ZIP_MAGIC):
+    if file_type == FileType.DOC and not (
+        data.startswith(b"\xd0\xcf\x11\xe0") or data[:4] == ZIP_MAGIC
+    ):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"不是有效 Word 文件：{filename}")
 
 
@@ -173,7 +176,9 @@ async def upload_documents(
         else:
             process_document_task.delay(d.id)
 
-    return DocumentUploadResponse(documents=out, skipped_duplicates=skipped, needs_preview=needs_preview)
+    return DocumentUploadResponse(
+        documents=out, skipped_duplicates=skipped, needs_preview=needs_preview
+    )
 
 
 # 兼容旧名
@@ -213,8 +218,8 @@ async def update_parsed_content(
     body: DocumentParsedContentUpdate,
 ) -> DocumentParsedContentOut:
     doc = await get_document(session, user_id, kb_id, doc_id)
-    if doc.status != "preview":
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅「待预览」状态的文档可编辑")
+    if doc.status not in ("preview", "done"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅「待预览」或「已完成」文档可编辑")
     doc.parsed_content = clamp_mediumtext(body.content.strip()) or ""
     if body.title is not None:
         doc.parsed_title = body.title.strip()[:512] or None
@@ -247,10 +252,12 @@ async def confirm_document_import(
     if not (doc.parsed_content or "").strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "预览内容为空，请先编辑或重新上传")
 
-    doc.status = "pending"
-    doc.error_message = None
-    doc.parse_progress = 0
-    doc.parse_stage = "排队中"
+    transition_document(
+        doc,
+        DocumentStatus.PENDING,
+        progress=0,
+        stage="排队中",
+    )
     await session.commit()
     await session.refresh(doc)
 
@@ -267,11 +274,7 @@ async def confirm_document_import(
 
 async def list_documents(session: AsyncSession, user_id: str, kb_id: str) -> list[Document]:
     await _ensure_kb(session, user_id, kb_id)
-    q = (
-        select(Document)
-        .where(Document.kb_id == kb_id)
-        .order_by(Document.created_at.desc())
-    )
+    q = select(Document).where(Document.kb_id == kb_id).order_by(Document.created_at.desc())
     r = await session.execute(q)
     return list(r.scalars().all())
 
@@ -293,10 +296,37 @@ async def retry_document_parse(
             status.HTTP_400_BAD_REQUEST,
             "仅「待处理」「解析中」或「失败」的文档可重试解析",
         )
-    doc.status = "pending"
-    doc.error_message = None
-    doc.parse_progress = 0
-    doc.parse_stage = "排队中"
+    transition_document(
+        doc,
+        DocumentStatus.PENDING,
+        progress=0,
+        stage="排队中",
+    )
+    await session.commit()
+    await session.refresh(doc)
+
+    from app.workers.document_tasks import process_document_task, run_document_ingest
+
+    settings = get_settings()
+    if settings.ingest_background_thread:
+        background_tasks.add_task(run_document_ingest, doc.id)
+    else:
+        process_document_task.delay(doc.id)
+    return DocumentOut.model_validate(doc)
+
+
+async def reindex_document(
+    session: AsyncSession,
+    user_id: str,
+    kb_id: str,
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+) -> DocumentOut:
+    """对已入库文档重新切块，并通过 Chunk Hash 仅更新变化片段。"""
+    doc = await get_document(session, user_id, kb_id, doc_id)
+    if doc.status != "done":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅已完成入库的文档可执行增量更新")
+    transition_document(doc, DocumentStatus.PENDING, progress=0, stage="增量更新排队中")
     await session.commit()
     await session.refresh(doc)
 
@@ -384,6 +414,8 @@ async def delete_document(
     try:
         await storage.delete(storage_key)
     except Exception:
-        log.warning("delete document %s: blob remove failed key=%s", doc_id, storage_key, exc_info=True)
+        log.warning(
+            "delete document %s: blob remove failed key=%s", doc_id, storage_key, exc_info=True
+        )
 
     await asyncio.to_thread(item_indexing.remove_index_for_document, doc_id)

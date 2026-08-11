@@ -6,7 +6,6 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 from app.models.schemas import ChatRequest
-from app.services.agent_orchestrator import build_research_plan
 from app.services.chat_prefetch import (
     PrefetchResult,
     fetch_arxiv_md,
@@ -17,8 +16,6 @@ from app.services.chat_prefetch import (
 )
 
 MAX_RETRIES = 1
-
-_PARALLEL_STEPS = frozenset({"arxiv_search", "semantic_scholar", "web_search"})
 
 
 async def _retry_fetch(run: Callable[[], Awaitable[str]]) -> str:
@@ -48,24 +45,9 @@ async def execute_deep_research_prefetch(
     rag_step_done: Callable[..., dict],
     want_web_search: Callable[[ChatRequest, str | None], bool],
     fetch_web: Callable[[], Awaitable[str]],
+    plan_steps: list[str],
 ) -> AsyncIterator[str | PrefetchResult]:
-    plan = build_research_plan(req, user_id)
-    parallel_in_plan = [s for s in plan.steps if s in _PARALLEL_STEPS]
-    planner_detail = (
-        f"深度研究 {len(plan.steps)} 步：知识库优先，{' + '.join(parallel_in_plan) or '无'} 并行检索"
-        if parallel_in_plan
-        else f"深度研究 {len(plan.steps)} 步"
-    )
-    yield sse_event(
-        {
-            "type": "agent_step",
-            "step": "planner",
-            "status": "done",
-            "detail": planner_detail,
-            "meta": {"goal": plan.goal, "steps": plan.steps, "notes": plan.notes},
-        },
-    )
-
+    selected_steps = set(plan_steps)
     lines: list[str] = []
 
     def emit(payload: dict) -> None:
@@ -76,7 +58,7 @@ async def execute_deep_research_prefetch(
     arxiv_md = ""
     s2_md = ""
 
-    if "rag_retrieval" in plan.steps and req.knowledge_base_id:
+    if "rag_retrieval" in selected_steps and req.knowledge_base_id:
         emit(agent_step_sse("rag_retrieval", status="running", detail="Hybrid RAG 检索中…"))
         try:
             kb_md, hits = await load_rag()
@@ -88,11 +70,11 @@ async def execute_deep_research_prefetch(
             emit(rag_step_done(rag_hits, kb_markdown=kb_md, diag=rag_diag))
 
     parallel_jobs: list[tuple[str, Callable[[], Awaitable[str]]]] = []
-    if "arxiv_search" in plan.steps and want_arxiv(req, user_id):
+    if "arxiv_search" in selected_steps and want_arxiv(req, user_id):
         parallel_jobs.append(("arxiv_search", lambda: fetch_arxiv_md(req, user_id)))
-    if "semantic_scholar" in plan.steps and want_semantic_scholar(req, user_id):
+    if "semantic_scholar" in selected_steps and want_semantic_scholar(req, user_id):
         parallel_jobs.append(("semantic_scholar", lambda: fetch_semantic_scholar_md(req, user_id)))
-    if "web_search" in plan.steps and want_web_search(req, user_id):
+    if "web_search" in selected_steps and want_web_search(req, user_id):
         parallel_jobs.append(("web_search", fetch_web))
 
     attachment_task: asyncio.Task[str] | None = None
@@ -100,13 +82,17 @@ async def execute_deep_research_prefetch(
         from app.services.chat_attachment_service import load_attachment_context_async
 
         emit(agent_step_sse("attachment_parse", status="running", detail="解析附件 / 识图中…"))
-        attachment_task = asyncio.create_task(load_attachment_context_async(user_id, req.attachment_ids))
+        attachment_task = asyncio.create_task(
+            load_attachment_context_async(user_id, req.attachment_ids)
+        )
 
     if parallel_jobs:
         for step, _ in parallel_jobs:
             emit(agent_step_sse(step, status="running", detail="并行检索中…"))
 
-        async def _run_named(step: str, fetch: Callable[[], Awaitable[str]]) -> tuple[str, str, str | None]:
+        async def _run_named(
+            step: str, fetch: Callable[[], Awaitable[str]]
+        ) -> tuple[str, str, str | None]:
             try:
                 return step, await _retry_fetch(fetch), None
             except Exception as e:  # noqa: BLE001

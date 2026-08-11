@@ -3,7 +3,18 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -122,7 +133,10 @@ class KnowledgeItem(Base):
         String(36), ForeignKey("documents.id", ondelete="SET NULL"), index=True, nullable=True
     )
     category_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("knowledge_categories.id", ondelete="SET NULL"), index=True, nullable=True
+        String(36),
+        ForeignKey("knowledge_categories.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
     )
     source_type: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
     title: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -167,13 +181,17 @@ class Document(Base):
     storage_key: Mapped[str] = mapped_column(String(1024), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    file_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    file_bytes: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
     md5: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     parsed_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     parsed_summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
     parsed_content: Mapped[str | None] = mapped_column(MediumText, nullable=True)
-    parse_progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    parse_progress: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     parse_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -188,6 +206,32 @@ class Document(Base):
 
     knowledge_base: Mapped[KnowledgeBase] = relationship(back_populates="documents")
     items: Mapped[list[KnowledgeItem]] = relationship(back_populates="document")
+    chunks: Mapped[list[DocumentChunk]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+    )
+
+
+class DocumentChunk(Base):
+    """文档切块清单，用于内容 Hash 对比和索引差量更新。"""
+
+    __tablename__ = "document_chunks"
+    __table_args__ = (UniqueConstraint("document_id", "ordinal", name="uq_document_chunk_ordinal"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    chunk_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    page: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    text: Mapped[str] = mapped_column(Text(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    document: Mapped[Document] = relationship(back_populates="chunks")
 
 
 class Conversation(Base):
@@ -235,6 +279,10 @@ class Conversation(Base):
         back_populates="conversation",
         cascade="all, delete-orphan",
     )
+    working_facts: Mapped[list[ConversationFact]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
 
 
 class ChatMessage(Base):
@@ -272,11 +320,40 @@ class ConversationSummary(Base):
     conversation: Mapped[Conversation] = relationship(back_populates="summaries")
 
 
+class ConversationFact(Base):
+    """LLM 从对话中提取的可更新工作记忆事实。"""
+
+    __tablename__ = "conversation_facts"
+    __table_args__ = (UniqueConstraint("conversation_id", "fact_key", name="uq_conv_fact_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    fact_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    fact_value: Mapped[str] = mapped_column(Text(), nullable=False)
+    confidence: Mapped[float] = mapped_column(nullable=False, default=0.8, server_default="0.8")
+    source_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    conversation: Mapped[Conversation] = relationship(back_populates="working_facts")
+
+
 class RagRetrievalLog(Base):
     __tablename__ = "rag_retrieval_logs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
     kb_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False
     )
@@ -297,7 +374,9 @@ class UserFeedback(Base):
     __tablename__ = "user_feedback"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
     kb_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("knowledge_bases.id", ondelete="SET NULL"), nullable=True
     )
@@ -320,13 +399,17 @@ class KnowledgeGap(Base):
     kb_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
     gap_key: Mapped[str] = mapped_column(String(256), nullable=False)
     trigger_rule: Mapped[str] = mapped_column(String(64), nullable=False)
     sample_queries: Mapped[list] = mapped_column(JSON, nullable=False)
     avg_score: Mapped[float | None] = mapped_column(nullable=True)
     hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open", server_default="open")
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="open", server_default="open"
+    )
     draft_item_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -391,7 +474,9 @@ class ResearchReport(Base):
     raw_answer_md: Mapped[str | None] = mapped_column(Text, nullable=True)
     outline_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     citations_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="ready", server_default="ready")
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="ready", server_default="ready"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

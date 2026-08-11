@@ -18,7 +18,7 @@ import {
   updateConversationTitle,
 } from "@/services/conversations";
 import { getExpert, streamExpertChat, type ExpertDto } from "@/services/experts";
-import { mergeThinkingParts, partitionThinkingBlocks } from "@/utils/partitionThinking";
+import { buildThinkingContent, partitionThinkingBlocks } from "@/utils/partitionThinking";
 import { randomId } from "@/utils/randomId";
 
 type Msg = {
@@ -259,37 +259,50 @@ export function ExpertChatPage() {
           },
           onDelta: (chunk) => {
             acc += chunk;
-            const { visible, thinking: tagThinking } = partitionThinkingBlocks(acc);
-            const thinkingContent = mergeThinkingParts(thinkingAcc, tagThinking);
             setMessages((m) =>
-              m.map((row) =>
-                row.id === assistantId
-                  ? { ...row, content: visible, thinkingContent, streamFinal: false }
-                  : row,
-              ),
+              m.map((row) => {
+                if (row.id !== assistantId) return row;
+                const { visible } = partitionThinkingBlocks(acc);
+                const thinkingContent = buildThinkingContent(thinkingAcc, acc, row.ragSources);
+                return { ...row, content: visible, thinkingContent, streamFinal: false };
+              }),
             );
           },
           onThinkingDelta: (chunk) => {
             thinkingAcc += chunk;
-            const { visible, thinking: tagThinking } = partitionThinkingBlocks(acc);
-            const thinkingContent = mergeThinkingParts(thinkingAcc, tagThinking);
             setMessages((m) =>
-              m.map((row) =>
-                row.id === assistantId
-                  ? { ...row, content: visible, thinkingContent, streamFinal: false }
-                  : row,
-              ),
+              m.map((row) => {
+                if (row.id !== assistantId) return row;
+                const { visible } = partitionThinkingBlocks(acc);
+                const thinkingContent = buildThinkingContent(thinkingAcc, acc, row.ragSources);
+                return { ...row, content: visible, thinkingContent, streamFinal: false };
+              }),
             );
           },
           onRagSources: (_kbId, sources) => {
             setMessages((m) =>
-              m.map((row) => (row.id === assistantId ? { ...row, ragSources: sources } : row)),
+              m.map((row) => {
+                if (row.id !== assistantId) return row;
+                const { visible } = partitionThinkingBlocks(acc);
+                const thinkingContent = buildThinkingContent(thinkingAcc, acc, sources);
+                return { ...row, ragSources: sources, content: visible, thinkingContent };
+              }),
             );
           },
           onError: (msg) => setErr(msg),
           onDone: () => {
             setMessages((m) =>
-              m.map((row) => (row.id === assistantId ? { ...row, streamFinal: true } : row)),
+              m.map((row) => {
+                if (row.id !== assistantId) return row;
+                const { visible } = partitionThinkingBlocks(acc);
+                const thinkingContent = buildThinkingContent(thinkingAcc, acc, row.ragSources);
+                return {
+                  ...row,
+                  content: visible.trim() || row.content,
+                  streamFinal: true,
+                  thinkingContent: thinkingContent || row.thinkingContent,
+                };
+              }),
             );
             setLoading(false);
           },
@@ -299,6 +312,11 @@ export function ExpertChatPage() {
       setErr(e instanceof Error ? e.message : "发送失败");
     } finally {
       setLoading(false);
+      setMessages((rows) =>
+        rows.map((row) =>
+          row.id === assistantId ? { ...row, streamFinal: true } : row,
+        ),
+      );
       void loadConversationList();
     }
   }, [

@@ -91,6 +91,13 @@ export async function streamExpertChat(
   const decoder = new TextDecoder();
   let carry = "";
 
+  let doneNotified = false;
+  const notifyDone = () => {
+    if (doneNotified) return;
+    doneNotified = true;
+    handlers.onDone();
+  };
+
   const handleLine = (line: string) => {
     if (!line.startsWith("data:")) return;
     const jsonPart = line.slice(5).trimStart();
@@ -107,7 +114,7 @@ export async function streamExpertChat(
     if (msg.type === "agent_step" && typeof msg.step === "string") {
       const statusRaw = msg.status;
       const status =
-        statusRaw === "running" || statusRaw === "done" || statusRaw === "error" || statusRaw === "skipped"
+        statusRaw === "running" || statusRaw === "done" || statusRaw === "error" || statusRaw === "skipped" || statusRaw === "degraded"
           ? statusRaw
           : "done";
       handlers.onAgentStep?.({
@@ -137,7 +144,7 @@ export async function streamExpertChat(
       return;
     }
     if (msg.type === "done") {
-      handlers.onDone();
+      notifyDone();
       return "done" as const;
     }
     return null;
@@ -173,10 +180,13 @@ export async function streamExpertChat(
       }
     }
     if (!finished) {
-      handlers.onDone();
+      notifyDone();
     }
   } finally {
-    if (finished) {
+    if (!finished) {
+      notifyDone();
+    }
+    if (finished || doneNotified) {
       void reader.cancel().catch(() => undefined);
     }
     reader.releaseLock();

@@ -6,7 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.memory_constants import approx_token_count
-from app.models.orm import ChatMessage, Conversation, ConversationSummary, KnowledgeBase
+from app.models.orm import (
+    ChatMessage,
+    Conversation,
+    ConversationFact,
+    ConversationSummary,
+    KnowledgeBase,
+)
 
 
 async def get_conversation_for_user(
@@ -78,7 +84,9 @@ async def resolve_conversation(
     """
     expert_ok = (expert_id or "").strip() or None
     if conversation_id and str(conversation_id).strip():
-        conv = await get_conversation_for_user(session, conversation_id=conversation_id.strip(), user_id=user_id)
+        conv = await get_conversation_for_user(
+            session, conversation_id=conversation_id.strip(), user_id=user_id
+        )
         if expert_ok and conv.expert_id and conv.expert_id != expert_ok:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "会话不属于该专家")
         kb_ok: str | None = None
@@ -155,9 +163,23 @@ async def load_summaries_concat(session: AsyncSession, conversation_id: str) -> 
     return "\n\n".join(parts)
 
 
+async def load_working_memory_concat(session: AsyncSession, conversation_id: str) -> str:
+    rows = await session.execute(
+        select(ConversationFact)
+        .where(ConversationFact.conversation_id == conversation_id)
+        .order_by(ConversationFact.updated_at.desc())
+    )
+    facts = list(rows.scalars().all())
+    if not facts:
+        return ""
+    return "\n".join(f"- {fact.fact_key}: {fact.fact_value}" for fact in facts[:40])
+
+
 async def count_summaries(session: AsyncSession, conversation_id: str) -> int:
     q = await session.execute(
-        select(func.count()).select_from(ConversationSummary).where(
+        select(func.count())
+        .select_from(ConversationSummary)
+        .where(
             ConversationSummary.conversation_id == conversation_id,
         ),
     )

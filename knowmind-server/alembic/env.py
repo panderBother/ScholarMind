@@ -18,7 +18,9 @@ from app.models.orm import (  # noqa: F401, E402
     ChatMessage,
     Conversation,
     ConversationSummary,
+    ConversationFact,
     Document,
+    DocumentChunk,
     KnowledgeBase,
     User,
 )

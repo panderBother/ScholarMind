@@ -48,7 +48,7 @@ import {
   submitChatFeedback,
 } from "@/services/distill";
 import { generateReportFromConversation } from "@/services/reports";
-import { mergeThinkingParts, partitionThinkingBlocks } from "@/utils/partitionThinking";
+import { buildThinkingContent, partitionThinkingBlocks } from "@/utils/partitionThinking";
 import {
   extractMediaFromText,
   extractMediaFromToolResult,
@@ -461,6 +461,14 @@ export function ChatPage() {
           },
           onAgentStep: (payload: AgentStepEvent) => {
             const detail = payload.detail?.trim();
+            if (payload.status === "done" || payload.status === "skipped") {
+              setMessages((m) =>
+                m.map((row) =>
+                  row.id === assistantId ? { ...row, streamStatus: undefined } : row,
+                ),
+              );
+              return;
+            }
             if (!detail) return;
             const statusText =
               payload.status === "error"
@@ -477,26 +485,24 @@ export function ChatPage() {
           },
           onThinkingDelta: (chunk) => {
             thinkingAcc += chunk;
-            const { visible, thinking: tagThinking } = partitionThinkingBlocks(acc);
-            const thinkingContent = mergeThinkingParts(thinkingAcc, tagThinking);
             setMessages((m) =>
-              m.map((row) =>
-                row.id === assistantId
-                  ? { ...row, content: visible, thinkingContent, streamFinal: false }
-                  : row,
-              ),
+              m.map((row) => {
+                if (row.id !== assistantId) return row;
+                const { visible } = partitionThinkingBlocks(acc);
+                const thinkingContent = buildThinkingContent(thinkingAcc, acc, row.ragSources);
+                return { ...row, content: visible, thinkingContent, streamFinal: false };
+              }),
             );
           },
           onDelta: (chunk) => {
             acc += chunk;
-            const { visible, thinking: tagThinking } = partitionThinkingBlocks(acc);
-            const thinkingContent = mergeThinkingParts(thinkingAcc, tagThinking);
             setMessages((m) =>
-              m.map((row) =>
-                row.id === assistantId
-                  ? { ...row, content: visible, thinkingContent, streamFinal: false }
-                  : row,
-              ),
+              m.map((row) => {
+                if (row.id !== assistantId) return row;
+                const { visible } = partitionThinkingBlocks(acc);
+                const thinkingContent = buildThinkingContent(thinkingAcc, acc, row.ragSources);
+                return { ...row, content: visible, thinkingContent, streamFinal: false };
+              }),
             );
           },
           onToolResult: (payload) => {
@@ -532,46 +538,46 @@ export function ChatPage() {
           },
           onRagSources: (ragKbId, sources) => {
             setMessages((m) =>
-              m.map((row) =>
-                row.id === assistantId ? { ...row, ragKbId, ragSources: sources } : row,
-              ),
+              m.map((row) => {
+                if (row.id !== assistantId) return row;
+                const { visible } = partitionThinkingBlocks(acc);
+                const thinkingContent = buildThinkingContent(thinkingAcc, acc, sources);
+                return { ...row, ragKbId, ragSources: sources, content: visible, thinkingContent };
+              }),
             );
           },
           onError: (msg) => {
             setErr(msg);
-            const { thinking: tagThinking } = partitionThinkingBlocks(acc);
-            const thinkingContent = mergeThinkingParts(thinkingAcc, tagThinking);
             setMessages((m) =>
-              m.map((row) =>
-                row.id === assistantId
-                  ? {
-                      ...row,
-                      content: acc.trim()
-                        ? acc
-                        : `**调用失败** ${msg}`,
-                      streamFinal: true,
-                      thinkingContent,
-                      streamStatus: msg,
-                    }
-                  : row,
-              ),
+              m.map((row) => {
+                if (row.id !== assistantId) return row;
+                const thinkingContent = buildThinkingContent(thinkingAcc, acc, row.ragSources);
+                return {
+                  ...row,
+                  content: acc.trim()
+                    ? acc
+                    : `**调用失败** ${msg}`,
+                  streamFinal: true,
+                  thinkingContent,
+                  streamStatus: msg,
+                };
+              }),
             );
           },
           onDone: () => {
-            const { visible, thinking: tagThinking } = partitionThinkingBlocks(acc);
-            const thinkingContent = mergeThinkingParts(thinkingAcc, tagThinking);
             setMessages((m) =>
-              m.map((row) =>
-                row.id === assistantId
-                  ? {
-                      ...row,
-                      content: visible.trim() || row.content,
-                      streamFinal: true,
-                      thinkingContent: thinkingContent || row.thinkingContent,
-                      streamStatus: undefined,
-                    }
-                  : row,
-              ),
+              m.map((row) => {
+                if (row.id !== assistantId) return row;
+                const { visible } = partitionThinkingBlocks(acc);
+                const thinkingContent = buildThinkingContent(thinkingAcc, acc, row.ragSources);
+                return {
+                  ...row,
+                  content: visible.trim() || row.content,
+                  streamFinal: true,
+                  thinkingContent: thinkingContent || row.thinkingContent,
+                  streamStatus: undefined,
+                };
+              }),
             );
             setLoading(false);
           },
@@ -591,6 +597,13 @@ export function ChatPage() {
       );
     } finally {
       setLoading(false);
+      setMessages((rows) =>
+        rows.map((row) =>
+          row.id === assistantId
+            ? { ...row, streamFinal: true, streamStatus: undefined }
+            : row,
+        ),
+      );
       attachmentsToSend.forEach((a) => {
         if (a.previewUrl && !sentImages.includes(a.previewUrl)) {
           URL.revokeObjectURL(a.previewUrl);

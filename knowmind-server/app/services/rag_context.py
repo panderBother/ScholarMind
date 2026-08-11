@@ -69,7 +69,12 @@ async def search_kb(
             limit=max(1, settings.rag_top_k),
             rerank=use_rerank,
             strict_fusion=True,
-            allow_keyword_fallback=False,
+            # Entity/name queries are often a poor fit for dense retrieval and
+            # can receive a low reranker score even when BM25 is an exact hit.
+            # Keep the strict semantic gate, but allow a confident lexical hit
+            # to survive as a safe fallback (the search service still requires
+            # a BM25 score >= 0.35).
+            allow_keyword_fallback=True,
         )
     except Exception as e:
         log.exception("rag hybrid search failed: %s", e)

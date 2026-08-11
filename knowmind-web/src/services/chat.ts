@@ -44,7 +44,7 @@ export type ChatResponseBody = {
   trace_id: string;
 };
 
-export type AgentStepStatus = "running" | "done" | "error" | "skipped";
+export type AgentStepStatus = "running" | "done" | "error" | "skipped" | "degraded";
 
 export type AgentStepEvent = {
   step: string;
@@ -135,6 +135,13 @@ export async function streamChatMessage(
   const decoder = new TextDecoder();
   let carry = "";
 
+  let doneNotified = false;
+  const notifyDone = () => {
+    if (doneNotified) return;
+    doneNotified = true;
+    handlers.onDone();
+  };
+
   const handleLine = (line: string) => {
     if (!line.startsWith("data:")) return;
     const jsonPart = line.slice(5).trimStart();
@@ -159,7 +166,7 @@ export async function streamChatMessage(
       const step = typeof (msg as { step?: string }).step === "string" ? (msg as { step: string }).step : "";
       const statusRaw = (msg as { status?: string }).status;
       const status =
-        statusRaw === "running" || statusRaw === "done" || statusRaw === "error" || statusRaw === "skipped"
+        statusRaw === "running" || statusRaw === "done" || statusRaw === "error" || statusRaw === "skipped" || statusRaw === "degraded"
           ? statusRaw
           : "done";
       if (step) {
@@ -219,7 +226,7 @@ export async function streamChatMessage(
       return;
     }
     if (msg.type === "done") {
-      handlers.onDone();
+      notifyDone();
       return "done" as const;
     }
     return null;
@@ -255,10 +262,13 @@ export async function streamChatMessage(
       }
     }
     if (!finished) {
-      handlers.onDone();
+      notifyDone();
     }
   } finally {
-    if (finished) {
+    if (!finished) {
+      notifyDone();
+    }
+    if (finished || doneNotified) {
       void reader.cancel().catch(() => undefined);
     }
     reader.releaseLock();

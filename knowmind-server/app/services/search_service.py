@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -126,6 +128,93 @@ def _bm25_hits(root: str, kb_id: str, query: str, top_k: int) -> list[dict[str, 
     for h in rows:
         h["bm25_score"] = h.get("score")
     return rows
+
+
+def _entity_query(query: str) -> str:
+    """保留实体查询字符，去掉常见问句尾巴。"""
+    value = re.sub(r"[\s？?，。,.、!！：:；;‘’\"“”'（）()]+", "", query or "")
+    return re.sub(r"(是谁|是什么人|介绍一下|简介|个人信息|的情况)$", "", value)
+
+
+async def _fuzzy_title_hits(
+    session: AsyncSession,
+    kb_id: str,
+    query: str,
+    *,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """对短实体/人名提供一字错别字容错，避免 dense/BM25 同时失配。"""
+    entity = _entity_query(query)
+    if len(entity) < 2 or len(entity) > 32:
+        return []
+    rows = await session.execute(
+        select(KnowledgeItem).where(
+            KnowledgeItem.kb_id == kb_id,
+            KnowledgeItem.lifecycle_status == "published",
+        ),
+    )
+    scored: list[tuple[float, float, KnowledgeItem]] = []
+    negative_markers = (
+        "没有明确",
+        "信息未详",
+        "未详尽记录",
+        "无法确认",
+        "可能原因包括拼写错误",
+        "请提供更多",
+        "缺少上下文",
+    )
+    for item in rows.scalars().all():
+        title = (item.title or "").strip()
+        if not title:
+            continue
+        # Compare against the title and every same-length window in the query.
+        score = difflib.SequenceMatcher(None, entity, title).ratio()
+        if len(title) >= len(entity):
+            score = max(
+                score,
+                max(
+                    (difflib.SequenceMatcher(None, entity, title[i : i + len(entity)]).ratio()
+                     for i in range(len(title) - len(entity) + 1)),
+                    default=0.0,
+                ),
+            )
+        elif len(entity) >= len(title):
+            score = max(
+                score,
+                max(
+                    (difflib.SequenceMatcher(None, entity[i : i + len(title)], title).ratio()
+                     for i in range(len(entity) - len(title) + 1)),
+                    default=0.0,
+                ),
+            )
+        if score >= 0.60:
+            content = (item.content or item.summary or "").strip()
+            negative_count = sum(1 for marker in negative_markers if marker in content)
+            richness = min(len(content), 2000) / 2000.0
+            intent_bonus = 0.0
+            if any(word in title for word in ("个人信息", "简历", "简介", "档案")):
+                intent_bonus = 0.20
+            elif any(word in title for word in ("技术栈", "经历", "项目")):
+                intent_bonus = 0.08
+            rank_score = score + richness * 0.18 + intent_bonus - negative_count * 0.35
+            scored.append((rank_score, score, item))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    hits: list[dict[str, Any]] = []
+    for _rank_score, score, item in scored[:limit]:
+        hits.append(
+            {
+                "chunk_id": f"entity:{item.id}",
+                "item_id": item.id,
+                "doc_id": str(item.document_id or ""),
+                "text": item.content or item.summary or item.title,
+                "page": int(item.page or 0),
+                "score": score,
+                "vector_score": score,
+                "bm25_score": max(1.0, score),
+                "entity_fuzzy": True,
+            },
+        )
+    return hits
 
 
 def _top_bm25_score(bm25_hits: list[dict[str, Any]]) -> float:
@@ -254,7 +343,7 @@ async def hybrid_search(
     bm25_k = max(1, min(int(settings.rag_bm25_top_k), 64))
     rerank_pool_k = min(40, vector_k + bm25_k)
 
-    vector_hits, bm25_hits = await asyncio.gather(
+    vector_hits, bm25_hits, fuzzy_title_hits = await asyncio.gather(
         _vector_hits(kb_id, query, vector_k),
         asyncio.to_thread(
             _bm25_hits,
@@ -263,7 +352,14 @@ async def hybrid_search(
             query,
             bm25_k,
         ),
+        _fuzzy_title_hits(session, kb_id, query),
     )
+
+    if fuzzy_title_hits:
+        fuzzy_ids = {str(hit.get("chunk_id") or "") for hit in fuzzy_title_hits}
+        bm25_hits = fuzzy_title_hits + [
+            hit for hit in bm25_hits if str(hit.get("chunk_id") or "") not in fuzzy_ids
+        ]
 
     embed_mode = (settings.embedding_mode or "bge").strip().lower()
     fused, bm25_ids, vector_score_by_id = _fuse_candidates(
@@ -272,6 +368,11 @@ async def hybrid_search(
         embed_mode=embed_mode,
         strict=strict_fusion,
     )
+    if fuzzy_title_hits:
+        fuzzy_ids = {str(hit.get("chunk_id") or "") for hit in fuzzy_title_hits}
+        fused = fuzzy_title_hits + [
+            hit for hit in fused if str(hit.get("chunk_id") or "") not in fuzzy_ids
+        ]
     bm25_score_by_id = {
         str(h.get("chunk_id") or ""): float(h.get("score") or 0) for h in bm25_hits
     }
@@ -283,6 +384,14 @@ async def hybrid_search(
             reranked.extend(fused[rerank_pool_k:])
     else:
         reranked = fused
+    if fuzzy_title_hits:
+        fuzzy_ids = {str(hit.get("chunk_id") or "") for hit in fuzzy_title_hits}
+        # Exact/near-exact title matches are authoritative entity hits; keep
+        # them ahead of generic semantic candidates even if the reranker is
+        # uncertain about a short misspelled name.
+        reranked = fuzzy_title_hits + [
+            hit for hit in reranked if str(hit.get("chunk_id") or "") not in fuzzy_ids
+        ]
     rerank_applied = bool(
         do_rerank
         and embed_mode != "hash"

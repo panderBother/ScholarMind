@@ -15,6 +15,7 @@ class PrefetchResult:
     web_injected: bool
     arxiv_injected: bool
     semantic_scholar_injected: bool
+    errors: dict[str, str] | None = None
 
 
 def merge_context_parts(*parts: str) -> str:
@@ -79,21 +80,22 @@ async def yield_prefetch_steps(
     rag_step_done: Callable[..., dict],
     want_web_search: Callable[[ChatRequest, str | None], bool],
 ) -> AsyncIterator[str | PrefetchResult]:
-    if req.deep_research:
-        from app.services.agent_orchestrator import build_research_plan, plan_step_sse
-
-        plan = build_research_plan(req, user_id)
-        yield sse_event(plan_step_sse(plan))
     if rag_task is not None:
-        yield sse_event(agent_step_sse("rag_retrieval", status="running", detail="Hybrid RAG 检索中…"))
+        yield sse_event(
+            agent_step_sse("rag_retrieval", status="running", detail="Hybrid RAG 检索中…")
+        )
     if web_task is not None:
         yield sse_event(agent_step_sse("web_search", status="running", detail="联网搜索中…"))
     if arxiv_task is not None:
         yield sse_event(agent_step_sse("arxiv_search", status="running", detail="arXiv 检索中…"))
     if s2_task is not None:
-        yield sse_event(agent_step_sse("semantic_scholar", status="running", detail="Semantic Scholar 检索中…"))
+        yield sse_event(
+            agent_step_sse("semantic_scholar", status="running", detail="Semantic Scholar 检索中…")
+        )
     if req.attachment_ids and user_id:
-        yield sse_event(agent_step_sse("attachment_parse", status="running", detail="解析附件 / 识图中…"))
+        yield sse_event(
+            agent_step_sse("attachment_parse", status="running", detail="解析附件 / 识图中…")
+        )
 
     result = await await_prefetch()
 
@@ -102,23 +104,55 @@ async def yield_prefetch_steps(
         yield sse_event(
             agent_step_sse(
                 "attachment_parse",
-                status="done",
-                detail="附件已解析并注入上下文" if has_att else "附件解析无有效内容",
-                meta={"injected": has_att},
+                status="error" if result.errors and "attachment_parse" in result.errors else "done",
+                detail=(
+                    f"降级：{result.errors['attachment_parse']}"
+                    if result.errors and "attachment_parse" in result.errors
+                    else "附件已解析并注入上下文"
+                    if has_att
+                    else "附件解析无有效内容"
+                ),
+                meta={
+                    "injected": has_att,
+                    "degraded": bool(result.errors and "attachment_parse" in result.errors),
+                },
             ),
         )
 
     if rag_task is not None:
-        yield sse_event(rag_step_done(rag_hits, kb_markdown=result.merged_context, diag=rag_diag))
+        if result.errors and "rag_retrieval" in result.errors:
+            yield sse_event(
+                agent_step_sse(
+                    "rag_retrieval",
+                    status="error",
+                    detail=f"降级：{result.errors['rag_retrieval']}",
+                    meta={"hit_count": len(rag_hits), "degraded": True},
+                ),
+            )
+        else:
+            yield sse_event(
+                rag_step_done(rag_hits, kb_markdown=result.merged_context, diag=rag_diag)
+            )
     elif req.knowledge_base_id:
-        yield sse_event(agent_step_sse("rag_retrieval", status="skipped", detail="未绑定知识库或未登录"))
+        yield sse_event(
+            agent_step_sse("rag_retrieval", status="skipped", detail="未绑定知识库或未登录")
+        )
     if web_task is not None:
         yield sse_event(
             agent_step_sse(
                 "web_search",
-                status="done",
-                detail="已注入联网结果" if result.web_injected else "无可用联网结果",
-                meta={"injected": result.web_injected},
+                status="error" if result.errors and "web_search" in result.errors else "done",
+                detail=(
+                    f"降级：{result.errors['web_search']}"
+                    if result.errors and "web_search" in result.errors
+                    else "已注入联网结果"
+                    if result.web_injected
+                    else "无可用联网结果"
+                ),
+                meta={
+                    "injected": result.web_injected,
+                    "degraded": bool(result.errors and "web_search" in result.errors),
+                },
             ),
         )
     elif want_web_search(req, user_id):
@@ -127,9 +161,18 @@ async def yield_prefetch_steps(
         yield sse_event(
             agent_step_sse(
                 "arxiv_search",
-                status="done",
-                detail="已注入 arXiv 结果" if result.arxiv_injected else "无 arXiv 结果",
-                meta={"injected": result.arxiv_injected},
+                status="error" if result.errors and "arxiv_search" in result.errors else "done",
+                detail=(
+                    f"降级：{result.errors['arxiv_search']}"
+                    if result.errors and "arxiv_search" in result.errors
+                    else "已注入 arXiv 结果"
+                    if result.arxiv_injected
+                    else "无 arXiv 结果"
+                ),
+                meta={
+                    "injected": result.arxiv_injected,
+                    "degraded": bool(result.errors and "arxiv_search" in result.errors),
+                },
             ),
         )
     elif want_arxiv(req, user_id):
@@ -138,11 +181,24 @@ async def yield_prefetch_steps(
         yield sse_event(
             agent_step_sse(
                 "semantic_scholar",
-                status="done",
-                detail="已注入 Semantic Scholar 结果" if result.semantic_scholar_injected else "无 S2 结果",
-                meta={"injected": result.semantic_scholar_injected},
+                status="error" if result.errors and "semantic_scholar" in result.errors else "done",
+                detail=(
+                    f"降级：{result.errors['semantic_scholar']}"
+                    if result.errors and "semantic_scholar" in result.errors
+                    else "已注入 Semantic Scholar 结果"
+                    if result.semantic_scholar_injected
+                    else "无 S2 结果"
+                ),
+                meta={
+                    "injected": result.semantic_scholar_injected,
+                    "degraded": bool(result.errors and "semantic_scholar" in result.errors),
+                },
             ),
         )
     elif want_semantic_scholar(req, user_id):
-        yield sse_event(agent_step_sse("semantic_scholar", status="skipped", detail="Semantic Scholar 未返回结果"))
+        yield sse_event(
+            agent_step_sse(
+                "semantic_scholar", status="skipped", detail="Semantic Scholar 未返回结果"
+            )
+        )
     yield result

@@ -13,6 +13,7 @@ class ResearchPlan:
     goal: str
     steps: list[str] = field(default_factory=list)
     notes: str = ""
+    context_mode: str = "new_conversation"
 
 
 def _want_web(req: ChatRequest, user_id: str | None) -> bool:
@@ -30,6 +31,9 @@ def _want_web(req: ChatRequest, user_id: str | None) -> bool:
 def build_research_plan(req: ChatRequest, user_id: str | None) -> ResearchPlan:
     """根据会话开关生成可观测的执行计划（非 LangGraph，但对齐 Plan-and-Execute 语义）。"""
     steps: list[str] = []
+    context_mode = "continuation" if req.conversation_id else "new_conversation"
+    if req.conversation_id:
+        steps.append("memory_retrieval")
     if req.knowledge_base_id:
         steps.append("rag_retrieval")
     if want_arxiv(req, user_id):
@@ -42,14 +46,22 @@ def build_research_plan(req: ChatRequest, user_id: str | None) -> ResearchPlan:
         steps.append("file_tools")
     if req.external_mcp:
         steps.append("external_mcp")
-    steps.append("memory_retrieval")
+    if "memory_retrieval" not in steps:
+        steps.append("memory_retrieval")
     steps.append("llm_generate")
 
-    notes = "将并行检索私有库与公开学术/网页资料，再综合生成可核对回答。"
+    notes = "续聊时先恢复会话记忆，再并行检索私有库与公开学术/网页资料，最后综合生成可核对回答。"
+    if context_mode == "new_conversation":
+        notes = "并行检索私有库与公开学术/网页资料，再结合工作记忆生成可核对回答。"
     if not steps or steps == ["memory_retrieval", "llm_generate"]:
         notes = "未开启额外工具，将基于对话记忆与模型知识回答。"
 
-    return ResearchPlan(goal=(req.message or "")[:200], steps=steps, notes=notes)
+    return ResearchPlan(
+        goal=(req.message or "")[:200],
+        steps=steps,
+        notes=notes,
+        context_mode=context_mode,
+    )
 
 
 def plan_step_sse(plan: ResearchPlan) -> dict:
@@ -62,6 +74,7 @@ def plan_step_sse(plan: ResearchPlan) -> dict:
             "goal": plan.goal,
             "steps": plan.steps,
             "notes": plan.notes,
+            "context_mode": plan.context_mode,
         },
     }
 

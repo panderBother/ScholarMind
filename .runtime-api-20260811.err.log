@@ -1,0 +1,107 @@
+INFO:     Will watch for changes in these directories: ['D:\\KnowMind\\knowmind-server']
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [39984] using WatchFiles
+INFO:     Started server process [43808]
+INFO:     Waiting for application startup.
+INFO:     KnowMind 已启动 file_tools_enabled=True file_tools_mode=prompt
+INFO:     Application startup complete.
+WARNING [app.services.redis_conv] redis set recent failed: Error 10061 connecting to 127.0.0.1:6379. Connect call failed ('127.0.0.1', 6379).
+INFO [app.indexing.chat_memory_factory] chat memory chroma: D:\KnowMind\knowmind-server\data\chroma / chat_memory_bge_m3
+INFO [app.indexing.vector_chroma_chat] chroma chat upsert chunk_id=f18f2cd2-921c-47be-a6d8-3bdcd826f9b6:30bd9987-8b50-4ace-ba6c-d83c5c48d07c
+WARNING [app.services.chat_memory_worker] working memory extraction failed: asyncio.run() cannot be called from a running event loop
+D:\KnowMind\knowmind-server\app\services\chat_memory_worker.py:180: RuntimeWarning: coroutine 'update_working_memory_sync.<locals>._call' was never awaited
+  return
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+INFO:     [external_mcp] chat/stream(多轮) 已启用
+WARNING [app.services.mcp_url_client] MCP streamable_http connect failed url=https://api.bizyair.cn/w/v1/mcp/269: HTTP 503 Service Temporarily Unavailable
+WARNING [app.services.mcp_url_client] MCP sse connect failed url=https://api.bizyair.cn/w/v1/mcp/269: HTTP 503 Service Temporarily Unavailable
+WARNING [app.services.mcp_url_client] mcp discover failed bizyair-banana-mcp: 无法连接 MCP 服务 https://api.bizyair.cn/w/v1/mcp/269: HTTP 503 Service Temporarily Unavailable
+WARNING [app.services.redis_conv] redis set recent failed: Error 10061 connecting to 127.0.0.1:6379. Connect call failed ('127.0.0.1', 6379).
+INFO [app.indexing.vector_chroma_chat] chroma chat upsert chunk_id=cfb7823c-76b5-4e9b-a152-016af3ec8eb9:7c57c494-ab41-432f-b4d8-697cf33dfbc5
+WARNING [app.services.chat_memory_worker] working memory extraction failed: asyncio.run() cannot be called from a running event loop
+WARNING [app.services.redis_conv] redis set recent failed: Error 10061 connecting to 127.0.0.1:6379. Connect call failed ('127.0.0.1', 6379).
+WARNING:  WatchFiles detected changes in 'app\services\chat_memory_worker.py'. Reloading...
+INFO [app.indexing.vector_chroma_chat] chroma chat upsert chunk_id=cfb7823c-76b5-4e9b-a152-016af3ec8eb9:9b6ed8f3-d6a6-4dde-9ee1-6b5b69dc1745
+WARNING [app.services.chat_memory_worker] working memory extraction failed: asyncio.run() cannot be called from a running event loop
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [43808]
+INFO:     Started server process [39492]
+INFO:     Waiting for application startup.
+INFO:     KnowMind 已启动 file_tools_enabled=True file_tools_mode=prompt
+INFO:     Application startup complete.
+INFO [app.indexing.chat_memory_factory] chat memory chroma: D:\KnowMind\knowmind-server\data\chroma / chat_memory_bge_m3
+WARNING [app.services.redis_conv] redis set recent failed: Error 10061 connecting to 127.0.0.1:6379. Connect call failed ('127.0.0.1', 6379).
+INFO [app.indexing.vector_chroma_chat] chroma chat upsert chunk_id=a8178807-6d88-47bd-a0db-ccca0fa26c07:d67c6d00-39d8-4572-8825-26b762ae8af2
+WARNING:  WatchFiles detected changes in 'app\services\rag_context.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [39492]
+INFO:     Started server process [24000]
+INFO:     Waiting for application startup.
+INFO:     KnowMind 已启动 file_tools_enabled=True file_tools_mode=prompt
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'app\services\search_service.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [24000]
+WARNING:  WatchFiles detected changes in 'app\services\search_service.py'. Reloading...
+INFO:     Started server process [46716]
+INFO:     Waiting for application startup.
+INFO:     KnowMind 已启动 file_tools_enabled=True file_tools_mode=prompt
+INFO:     Application startup complete.
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [46716]
+INFO:     Started server process [30128]
+INFO:     Waiting for application startup.
+INFO:     KnowMind 已启动 file_tools_enabled=True file_tools_mode=prompt
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'app\services\search_service.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [30128]
+WARNING:  WatchFiles detected changes in 'app\services\search_service.py'. Reloading...
+INFO:     Started server process [35608]
+INFO:     Waiting for application startup.
+INFO:     KnowMind 已启动 file_tools_enabled=True file_tools_mode=prompt
+INFO:     Application startup complete.
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [35608]
+INFO:     Started server process [28768]
+INFO:     Waiting for application startup.
+INFO:     KnowMind 已启动 file_tools_enabled=True file_tools_mode=prompt
+INFO:     Application startup complete.
+WARNING [app.services.llm_planner] LLM planner failed, fallback to deterministic plan: Planner 未返回合法 JSON
+INFO [app.indexing.vector_factory] vector backend: chroma (D:\KnowMind\knowmind-server\data\chroma)
+INFO [app.ingest.rerank] rerank (http): in=16 out=16
+INFO [app.services.search_service] hybrid_search kb=28f05df2-1060-4c7e-9e68-426a969be095 vec=15 bm25=1 fused=16 rerank=True out=1
+INFO [app.services.rag_context] rag: kb=28f05df2-1060-4c7e-9e68-426a969be095 hits=1 avg=1.000
+INFO [app.indexing.chat_memory_factory] chat memory chroma: D:\KnowMind\knowmind-server\data\chroma / chat_memory_bge_m3
+WARNING [app.services.redis_conv] redis set recent failed: Error 10061 connecting to 127.0.0.1:6379. Connect call failed ('127.0.0.1', 6379).
+INFO [app.indexing.vector_chroma_chat] chroma chat upsert chunk_id=a8178807-6d88-47bd-a0db-ccca0fa26c07:a9254f54-21d7-47ba-832c-11c0f214edcc
+WARNING:  WatchFiles detected changes in 'app\services\search_service.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [28768]
+INFO:     Started server process [31984]
+INFO:     Waiting for application startup.
+INFO:     KnowMind 已启动 file_tools_enabled=True file_tools_mode=prompt
+INFO:     Application startup complete.
+INFO [app.indexing.chat_memory_factory] chat memory chroma: D:\KnowMind\knowmind-server\data\chroma / chat_memory_bge_m3
+WARNING [app.services.redis_conv] redis set recent failed: Error 10061 connecting to 127.0.0.1:6379. Connect call failed ('127.0.0.1', 6379).
+INFO [app.indexing.vector_chroma_chat] chroma chat upsert chunk_id=a8178807-6d88-47bd-a0db-ccca0fa26c07:a5a168eb-58b2-4473-81f2-991e485a8642
+INFO [app.indexing.vector_factory] vector backend: chroma (D:\KnowMind\knowmind-server\data\chroma)
+INFO [app.ingest.rerank] rerank (http): in=18 out=18
+INFO [app.services.search_service] hybrid_search kb=28f05df2-1060-4c7e-9e68-426a969be095 vec=15 bm25=3 fused=18 rerank=True out=3
+INFO [app.services.rag_context] rag: kb=28f05df2-1060-4c7e-9e68-426a969be095 hits=3 avg=1.000
+WARNING [app.services.redis_conv] redis set recent failed: Error 10061 connecting to 127.0.0.1:6379. Connect call failed ('127.0.0.1', 6379).
+INFO [app.indexing.vector_chroma_chat] chroma chat upsert chunk_id=d430d248-8426-490d-8b5c-6391e6e8d87a:db0f3af4-7fd4-490d-9bed-b8e026578191

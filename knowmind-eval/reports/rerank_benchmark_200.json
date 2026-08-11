@@ -1,0 +1,39 @@
+{
+  "samples": 200,
+  "baseline_rrf": {
+    "precision@1": 0.17,
+    "precision@3": 0.1683,
+    "precision@5": 0.167,
+    "recall@3": 0.505,
+    "recall@5": 0.835,
+    "mrr": 0.4117,
+    "ndcg@5": 0.4947
+  },
+  "crossencoder": {
+    "precision@1": 0.87,
+    "precision@3": 0.325,
+    "precision@5": 0.198,
+    "recall@3": 0.975,
+    "recall@5": 0.99,
+    "mrr": 0.9258,
+    "ndcg@5": 0.941
+  },
+  "absolute_delta": {
+    "precision@1": 0.7,
+    "precision@3": 0.1567,
+    "precision@5": 0.031,
+    "recall@3": 0.47,
+    "recall@5": 0.155,
+    "mrr": 0.5141,
+    "ndcg@5": 0.4463
+  },
+  "relative_delta": {
+    "precision@1": 4.1176,
+    "precision@3": 0.9311,
+    "precision@5": 0.1856,
+    "recall@3": 0.9307,
+    "recall@5": 0.1856,
+    "mrr": 1.2487,
+    "ndcg@5": 0.9022
+  }
+}

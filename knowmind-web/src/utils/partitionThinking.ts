@@ -3,6 +3,10 @@
  * 流式拼接时需反复解析：完整块从正文移除；未闭合块之后的内容暂视为推理，不进入 Markdown。
  */
 
+import type { RagSourceDto } from "@/services/chat";
+
+import { formatRagSourcesThinkingBlock } from "@/utils/formatRagSourcesThinking";
+
 /** 常见推理标签名（与模型 / Chat 模板一致；按需追加） */
 const THINKING_TAG_NAMES = ["think", "redacted_thinking", "reasoning"] as const;
 
@@ -54,5 +58,18 @@ export function partitionThinkingBlocks(raw: string): { visible: string; thinkin
 export function mergeThinkingParts(sseThinking: string, tagThinking: string): string | undefined {
   const parts = [sseThinking.trim(), tagThinking.trim()].filter(Boolean);
   if (parts.length === 0) return undefined;
+  return parts.join("\n\n—\n\n");
+}
+
+/** 合并 SSE 推理、正文内 think 标签与 RAG 引用（引用固定在思维链末尾） */
+export function buildThinkingContent(
+  sseThinking: string,
+  rawAssistant: string,
+  ragSources?: RagSourceDto[],
+): string | undefined {
+  const { thinking: tagThinking } = partitionThinkingBlocks(rawAssistant);
+  const ragBlock = ragSources?.length ? formatRagSourcesThinkingBlock(ragSources) : "";
+  const parts = [sseThinking.trim(), tagThinking.trim(), ragBlock.trim()].filter(Boolean);
+  if (!parts.length) return undefined;
   return parts.join("\n\n—\n\n");
 }

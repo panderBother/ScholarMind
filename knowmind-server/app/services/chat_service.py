@@ -5,6 +5,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import TypeVar
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,7 @@ from app.services.conversation_service import (
     append_message,
     load_messages_ordered,
     load_summaries_concat,
+    load_working_memory_concat,
     resolve_conversation,
     rows_for_redis,
 )
@@ -50,6 +52,11 @@ from app.services.memory_prompt import (
     history_pairs_from_messages,
     retrieval_query_text,
 )
+from app.services.llm_planner import (
+    apply_plan_to_request,
+    build_llm_execution_plan,
+    planner_sse,
+)
 from app.services.chat_prefetch import (
     PrefetchResult,
     fetch_arxiv_md,
@@ -60,6 +67,8 @@ from app.services.chat_prefetch import (
     yield_prefetch_steps,
 )
 from app.services.redis_conv import set_recent_messages
+
+T = TypeVar("T")
 
 
 def _sse_event(payload: dict) -> str:
@@ -145,6 +154,7 @@ async def _stream_prefetch_bundle(
     attachment_task: asyncio.Task[str] | None,
     rag_hits: list,
     rag_diag: dict,
+    plan_steps: list[str] | None = None,
 ) -> AsyncIterator[str | PrefetchResult]:
     if req.deep_research:
 
@@ -184,6 +194,7 @@ async def _stream_prefetch_bundle(
             rag_step_done=_rag_step_done,
             want_web_search=_want_web_search,
             fetch_web=fetch_web,
+            plan_steps=plan_steps or [],
         ):
             yield item
         return
@@ -193,6 +204,8 @@ async def _stream_prefetch_bundle(
     async def _await_prefetch() -> PrefetchResult:
         nonlocal rag_hits
         nonlocal attachment_md
+
+        errors: dict[str, str] = {}
 
         async def _get_rag() -> str:
             if rag_task is None:
@@ -207,12 +220,31 @@ async def _stream_prefetch_bundle(
         async def _empty_str() -> str:
             return ""
 
+        async def _safe_text(step: str, awaitable: Awaitable[str]) -> str:
+            try:
+                return await awaitable
+            except Exception as e:  # noqa: BLE001
+                errors[step] = str(e) or e.__class__.__name__
+                log_info("prefetch %s failed; continuing with remaining sources: %s", step, e)
+                return ""
+
+        async def _safe_rag() -> str:
+            try:
+                return await _get_rag()
+            except Exception as e:  # noqa: BLE001
+                errors["rag_retrieval"] = str(e) or e.__class__.__name__
+                rag_diag["error"] = errors["rag_retrieval"]
+                log_info("prefetch rag failed; continuing with remaining sources: %s", e)
+                return (kb_context or "").strip()
+
         web_md, arxiv_md, s2_md, attachment_md, kb_from_rag = await asyncio.gather(
-            web_task if web_task is not None else _empty_str(),
-            arxiv_task if arxiv_task is not None else _empty_str(),
-            s2_task if s2_task is not None else _empty_str(),
-            attachment_task if attachment_task is not None else _empty_str(),
-            _get_rag(),
+            _safe_text("web_search", web_task) if web_task is not None else _empty_str(),
+            _safe_text("arxiv_search", arxiv_task) if arxiv_task is not None else _empty_str(),
+            _safe_text("semantic_scholar", s2_task) if s2_task is not None else _empty_str(),
+            _safe_text("attachment_parse", attachment_task)
+            if attachment_task is not None
+            else _empty_str(),
+            _safe_rag(),
         )
         merged = merge_context_parts(kb_from_rag, web_md, arxiv_md, s2_md, attachment_md)
         return PrefetchResult(
@@ -220,6 +252,7 @@ async def _stream_prefetch_bundle(
             web_injected=bool((web_md or "").strip()),
             arxiv_injected=bool((arxiv_md or "").strip()),
             semantic_scholar_injected=bool((s2_md or "").strip()),
+            errors=errors or None,
         )
 
     async for item in yield_prefetch_steps(
@@ -251,6 +284,33 @@ def _want_file_tools(req: ChatRequest, user_id: str | None = None) -> bool:
             return False
     msg = (req.message or "").strip()
     return has_read_intent(msg) or has_write_intent(msg)
+
+
+async def _run_prefetch_with_retry(
+    step: str,
+    run: Callable[[], Awaitable[T]],
+    *,
+    retries: int = 1,
+) -> T:
+    """检索源级重试；全部失败后交给上层做单源降级，不中断其余并发源。"""
+    last_error: Exception | None = None
+    for attempt in range(max(0, retries) + 1):
+        try:
+            return await run()
+        except Exception as e:  # noqa: BLE001
+            last_error = e
+            if attempt >= retries:
+                break
+            log_info(
+                "prefetch %s failed, retrying (%s/%s): %s",
+                step,
+                attempt + 2,
+                retries + 1,
+                e,
+            )
+            await asyncio.sleep(0.3 * (attempt + 1))
+    assert last_error is not None
+    raise last_error
 
 
 def _want_web_search(req: ChatRequest, user_id: str | None = None) -> bool:
@@ -357,7 +417,9 @@ async def _iter_external_mcp_sse_events(
                 _agent_step_sse(
                     "external_mcp",
                     status="running",
-                    detail=f"已发现 {tool_count} 个远程工具，调用中…" if tool_count else "未发现可用工具",
+                    detail=f"已发现 {tool_count} 个远程工具，调用中…"
+                    if tool_count
+                    else "未发现可用工具",
                 ),
             )
 
@@ -720,6 +782,34 @@ async def iter_chat_stream(
         yield _sse_event({"type": "done"})
         return
 
+    planning_context = ""
+    if session is not None and user_id is not None and req.conversation_id:
+        conv_for_plan = await session.get(Conversation, req.conversation_id)
+        if conv_for_plan is not None and conv_for_plan.user_id == user_id:
+            prior = await load_messages_ordered(session, conv_for_plan.id)
+            recent = prior[-6:]
+            planning_context = "\n\n".join(f"{m.role}: {m.content}" for m in recent)
+            summaries_for_plan = await load_summaries_concat(session, conv_for_plan.id)
+            facts_for_plan = await load_working_memory_concat(session, conv_for_plan.id)
+            if summaries_for_plan:
+                planning_context = (
+                    f"历史摘要：\n{summaries_for_plan[-3000:]}\n\n最近消息：\n{planning_context}"
+                )
+            if facts_for_plan:
+                planning_context = f"工作记忆：\n{facts_for_plan[-2000:]}\n\n{planning_context}"
+
+    yield _sse_event(
+        _agent_step_sse("planner", status="running", detail="LLM 正在根据会话上下文规划步骤…")
+    )
+    execution_plan = await build_llm_execution_plan(
+        req,
+        conversation_context=planning_context,
+    )
+    yield _sse_event(planner_sse(execution_plan))
+    req = apply_plan_to_request(req, execution_plan)
+    use_vector_memory = "memory_retrieval" in execution_plan.steps
+    use_rag_retrieval = "rag_retrieval" in execution_plan.steps
+
     use_memory = session is not None and user_id is not None
     rag_hits: list = []
     rag_diag: dict = {}
@@ -728,20 +818,44 @@ async def iter_chat_stream(
     arxiv_task: asyncio.Task[str] | None = None
     s2_task: asyncio.Task[str] | None = None
     attachment_task: asyncio.Task[str] | None = None
-    if user_id and req.knowledge_base_id:
+    if user_id and req.knowledge_base_id and use_rag_retrieval:
         rag_task = asyncio.create_task(
-            _load_kb_context_isolated(user_id, req.knowledge_base_id, req.message),
+            _run_prefetch_with_retry(
+                "rag_retrieval",
+                lambda: _load_kb_context_isolated(
+                    user_id,
+                    req.knowledge_base_id or "",
+                    req.message,
+                ),
+            ),
         )
     if user_id and req.attachment_ids and not req.deep_research:
         from app.services.chat_attachment_service import load_attachment_context_async
 
-        attachment_task = asyncio.create_task(load_attachment_context_async(user_id, req.attachment_ids))
+        attachment_task = asyncio.create_task(
+            load_attachment_context_async(user_id, req.attachment_ids)
+        )
     if _want_web_search(req, user_id) and not req.deep_research:
-        web_task = asyncio.create_task(_fetch_web_markdown(req, user_id))
+        web_task = asyncio.create_task(
+            _run_prefetch_with_retry(
+                "web_search",
+                lambda: _fetch_web_markdown(req, user_id),
+            ),
+        )
     if want_arxiv(req, user_id) and not req.deep_research:
-        arxiv_task = asyncio.create_task(fetch_arxiv_md(req, user_id))
+        arxiv_task = asyncio.create_task(
+            _run_prefetch_with_retry(
+                "arxiv_search",
+                lambda: fetch_arxiv_md(req, user_id),
+            ),
+        )
     if want_semantic_scholar(req, user_id) and not req.deep_research:
-        s2_task = asyncio.create_task(fetch_semantic_scholar_md(req, user_id))
+        s2_task = asyncio.create_task(
+            _run_prefetch_with_retry(
+                "semantic_scholar",
+                lambda: fetch_semantic_scholar_md(req, user_id),
+            ),
+        )
 
     async def _stream_prefetch():
         merged: PrefetchResult = PrefetchResult("", False, False, False)
@@ -756,6 +870,7 @@ async def iter_chat_stream(
             attachment_task=attachment_task,
             rag_hits=rag_hits,
             rag_diag=rag_diag,
+            plan_steps=execution_plan.steps,
         ):
             if isinstance(prefetch_item, PrefetchResult):
                 merged = prefetch_item
@@ -786,10 +901,14 @@ async def iter_chat_stream(
         )
         try:
             if _want_file_tools(req, user_id):
-                yield _sse_event(_agent_step_sse("file_tools", status="running", detail="文件读写编排中…"))
+                yield _sse_event(
+                    _agent_step_sse("file_tools", status="running", detail="文件读写编排中…")
+                )
                 log_info("[file_tools] chat/stream 已启用 file_tools")
                 reasoning, content, traces = await _stream_file_tools_turn(
-                    req, messages, kb_context=merged_kb or "",
+                    req,
+                    messages,
+                    kb_context=merged_kb or "",
                 )
                 for ev in _yield_traces(traces):
                     yield _sse_event(ev)
@@ -802,7 +921,9 @@ async def iter_chat_stream(
                 )
                 if not traces:
                     log_info("[file_tools] %s", _file_tools_noop_hint(req))
-                yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型生成中…"))
+                yield _sse_event(
+                    _agent_step_sse("llm_generate", status="running", detail="模型生成中…")
+                )
                 if reasoning.strip():
                     for chunk in iter_text_chunks(reasoning):
                         yield _sse_event({"type": "thinking_delta", "text": chunk})
@@ -817,7 +938,9 @@ async def iter_chat_stream(
                             detail="未启用带 URL 的外部 MCP，请先在工具页导入并打开开关",
                         ),
                     )
-                    yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型流式生成中…"))
+                    yield _sse_event(
+                        _agent_step_sse("llm_generate", status="running", detail="模型流式生成中…")
+                    )
                     async for reasoning_piece, content_piece in iter_edgefn_token_stream(messages):
                         if reasoning_piece:
                             yield _sse_event({"type": "thinking_delta", "text": reasoning_piece})
@@ -825,13 +948,17 @@ async def iter_chat_stream(
                             yield _sse_event({"type": "delta", "text": content_piece})
                 elif _want_external_mcp(req, user_id):
                     yield _sse_event(
-                        _agent_step_sse("external_mcp", status="running", detail="连接远程 MCP 并发现工具…"),
+                        _agent_step_sse(
+                            "external_mcp", status="running", detail="连接远程 MCP 并发现工具…"
+                        ),
                     )
                     log_info("[external_mcp] chat/stream 已启用")
                     async for sse_line in _consume_external_mcp_turn(messages, user_id=user_id):
                         yield sse_line
             else:
-                yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型流式生成中…"))
+                yield _sse_event(
+                    _agent_step_sse("llm_generate", status="running", detail="模型流式生成中…")
+                )
                 if web_injected:
                     log_info("[web_search] chat/stream 已注入联网结果")
                 async for reasoning_piece, content_piece in iter_edgefn_token_stream(messages):
@@ -900,7 +1027,9 @@ async def iter_chat_stream(
     )
     await session.flush()
     n_user = await session.scalar(
-        select(func.count()).select_from(ChatMessage).where(
+        select(func.count())
+        .select_from(ChatMessage)
+        .where(
             ChatMessage.conversation_id == conv.id,
             ChatMessage.role == "user",
         ),
@@ -946,36 +1075,48 @@ async def iter_chat_stream(
             prior_assistant_tail = m.content
             break
 
-    qtext = retrieval_query_text(user_message=req.message, prior_assistant_tail=prior_assistant_tail)
+    qtext = retrieval_query_text(
+        user_message=req.message, prior_assistant_tail=prior_assistant_tail
+    )
     summaries = await load_summaries_concat(session, conv.id)
+    working_memory = await load_working_memory_concat(session, conv.id)
 
     retrieval_md = ""
     memory_hit_count = 0
-    yield _sse_event(_agent_step_sse("memory_retrieval", status="running", detail="对话记忆向量召回…"))
-    try:
-        q_vectors = await asyncio.to_thread(embed_texts, [qtext[:8000]])
-        qvec = q_vectors[0]
-        hits = await asyncio.to_thread(
-            get_chat_memory_index().query_for_conversation,
-            conversation_id=conv.id,
-            user_id=user_id,
-            query_embedding=qvec,
-            top_k=settings.memory_retrieval_top_k,
+    if use_vector_memory:
+        yield _sse_event(
+            _agent_step_sse("memory_retrieval", status="running", detail="对话记忆向量召回…")
         )
-        memory_hit_count = len(hits)
-        retrieval_md = format_retrieval_hits_markdown(hits)
+        try:
+            q_vectors = await asyncio.to_thread(embed_texts, [qtext[:8000]])
+            qvec = q_vectors[0]
+            hits = await asyncio.to_thread(
+                get_chat_memory_index().query_for_conversation,
+                conversation_id=conv.id,
+                user_id=user_id,
+                query_embedding=qvec,
+                top_k=settings.memory_retrieval_top_k,
+            )
+            memory_hit_count = len(hits)
+            retrieval_md = format_retrieval_hits_markdown(hits)
+            yield _sse_event(
+                _agent_step_sse(
+                    "memory_retrieval",
+                    status="done",
+                    detail=f"召回 {memory_hit_count} 条历史片段",
+                    meta={"hit_count": memory_hit_count},
+                ),
+            )
+        except Exception as e:  # noqa: BLE001
+            retrieval_md = ""
+            yield _sse_event(
+                _agent_step_sse("memory_retrieval", status="error", detail=f"记忆召回失败：{e!s}"),
+            )
+    else:
         yield _sse_event(
             _agent_step_sse(
-                "memory_retrieval",
-                status="done",
-                detail=f"召回 {memory_hit_count} 条历史片段",
-                meta={"hit_count": memory_hit_count},
-            ),
-        )
-    except Exception as e:  # noqa: BLE001
-        retrieval_md = ""
-        yield _sse_event(
-            _agent_step_sse("memory_retrieval", status="error", detail=f"记忆召回失败：{e!s}"),
+                "memory_retrieval", status="skipped", detail="Planner 判定无需历史向量召回"
+            )
         )
 
     trimmed = apply_recent_message_window(all_msgs)
@@ -987,6 +1128,7 @@ async def iter_chat_stream(
         external_mcp=bool(req.external_mcp),
         kb_context=merged_kb or None,
         memory_summaries=summaries,
+        working_memory=working_memory,
         memory_retrieval=retrieval_md,
         history_pairs=pairs,
         expert_prompt=expert_prompt,
@@ -996,10 +1138,14 @@ async def iter_chat_stream(
     stream_ok = False
     try:
         if _want_file_tools(req, user_id):
-            yield _sse_event(_agent_step_sse("file_tools", status="running", detail="文件读写编排中…"))
+            yield _sse_event(
+                _agent_step_sse("file_tools", status="running", detail="文件读写编排中…")
+            )
             log_info("[file_tools] chat/stream(多轮) 已启用 file_tools")
             reasoning, content, traces = await _stream_file_tools_turn(
-                req, messages, kb_context=merged_kb or "",
+                req,
+                messages,
+                kb_context=merged_kb or "",
             )
             for ev in _yield_traces(traces):
                 yield _sse_event(ev)
@@ -1012,7 +1158,9 @@ async def iter_chat_stream(
             )
             if not traces:
                 log_info("[file_tools] %s", _file_tools_noop_hint(req))
-            yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型生成中…"))
+            yield _sse_event(
+                _agent_step_sse("llm_generate", status="running", detail="模型生成中…")
+            )
             if reasoning.strip():
                 for chunk in iter_text_chunks(reasoning):
                     yield _sse_event({"type": "thinking_delta", "text": chunk})
@@ -1030,7 +1178,9 @@ async def iter_chat_stream(
                         detail="未启用带 URL 的外部 MCP，请先在工具页导入并打开开关",
                     ),
                 )
-                yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型流式生成中…"))
+                yield _sse_event(
+                    _agent_step_sse("llm_generate", status="running", detail="模型流式生成中…")
+                )
                 async for reasoning_piece, content_piece in iter_edgefn_token_stream(messages):
                     if reasoning_piece:
                         yield _sse_event({"type": "thinking_delta", "text": reasoning_piece})
@@ -1040,7 +1190,9 @@ async def iter_chat_stream(
                 stream_ok = True
             else:
                 yield _sse_event(
-                    _agent_step_sse("external_mcp", status="running", detail="连接远程 MCP 并发现工具…"),
+                    _agent_step_sse(
+                        "external_mcp", status="running", detail="连接远程 MCP 并发现工具…"
+                    ),
                 )
                 log_info("[external_mcp] chat/stream(多轮) 已启用")
                 mcp_turn_box: list[_ExternalMcpTurnResult] = []
@@ -1056,7 +1208,9 @@ async def iter_chat_stream(
                     assistant_body_parts.append(body)
                 stream_ok = True
         else:
-            yield _sse_event(_agent_step_sse("llm_generate", status="running", detail="模型流式生成中…"))
+            yield _sse_event(
+                _agent_step_sse("llm_generate", status="running", detail="模型流式生成中…")
+            )
             if web_injected:
                 log_info("[web_search] chat/stream(多轮) 已注入联网结果")
             async for reasoning_piece, content_piece in iter_edgefn_token_stream(messages):
@@ -1090,7 +1244,9 @@ async def iter_chat_stream(
             ut = int(user_row.token_est or approx_token_count(user_row.content))
             at = approx_token_count(assistant_text)
             conv_ref.acc_turns_since_summary = int(conv_ref.acc_turns_since_summary or 0) + 1
-            conv_ref.acc_tokens_since_summary = int(conv_ref.acc_tokens_since_summary or 0) + ut + at
+            conv_ref.acc_tokens_since_summary = (
+                int(conv_ref.acc_tokens_since_summary or 0) + ut + at
+            )
             conv_ref.updated_at = datetime.now(timezone.utc)
         await session.commit()
         await session.refresh(asst_row)
@@ -1141,7 +1297,9 @@ async def run_chat(req: ChatRequest, *, kb_context: str = "") -> ChatResponse:
     try:
         if _want_file_tools(req):
             reasoning, content, _traces = await _stream_file_tools_turn(
-                req, messages, kb_context=merged_kb or "",
+                req,
+                messages,
+                kb_context=merged_kb or "",
             )
         else:
             reasoning, content, _raw = await complete_chat(messages)

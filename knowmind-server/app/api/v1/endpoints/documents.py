@@ -1,4 +1,13 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,9 +24,7 @@ from app.services import document_service
 
 router = APIRouter()
 
-SUPPORTED_FORMATS_HINT = (
-    "PDF、DOCX/DOC、Excel/CSV、Markdown/TXT、PNG/JPG 等图片"
-)
+SUPPORTED_FORMATS_HINT = "PDF、DOCX/DOC、Excel/CSV、Markdown/TXT、PNG/JPG 等图片"
 
 
 @router.get("/{kb_id}/documents", response_model=list[DocumentOut])
@@ -75,7 +82,9 @@ async def update_document_parsed_content(
     return await document_service.update_parsed_content(session, user_id, kb_id, doc_id, body)
 
 
-@router.post("/{kb_id}/documents/{doc_id}/confirm-import", response_model=DocumentConfirmImportResponse)
+@router.post(
+    "/{kb_id}/documents/{doc_id}/confirm-import", response_model=DocumentConfirmImportResponse
+)
 async def confirm_document_import(
     kb_id: str,
     doc_id: str,
@@ -113,7 +122,22 @@ async def retry_parse_document(
     session: AsyncSession = Depends(get_db),
     user_id: str = Depends(get_current_user_id),
 ):
-    return await document_service.retry_document_parse(session, user_id, kb_id, doc_id, background_tasks)
+    return await document_service.retry_document_parse(
+        session, user_id, kb_id, doc_id, background_tasks
+    )
+
+
+@router.post("/{kb_id}/documents/{doc_id}/reindex", response_model=DocumentOut)
+async def reindex_document(
+    kb_id: str,
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
+    return await document_service.reindex_document(
+        session, user_id, kb_id, doc_id, background_tasks
+    )
 
 
 @router.delete("/{kb_id}/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)

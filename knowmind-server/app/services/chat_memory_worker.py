@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 from datetime import datetime, timezone
 
@@ -12,9 +13,10 @@ from app.core.config import get_settings
 from app.core.memory_constants import MEMORY_RECENT_MESSAGE_COUNT
 from app.db.sync_session import session_scope
 from app.indexing.chat_memory_factory import get_chat_memory_index
-from app.models.orm import ChatMessage, Conversation, ConversationSummary
+from app.models.orm import ChatMessage, Conversation, ConversationFact, ConversationSummary
 from app.services.conversation_service import should_run_summary
 from app.services.edgefn_client import build_chat_messages, complete_chat
+from app.utils.llm_json import parse_llm_json_array
 
 log = logging.getLogger(__name__)
 
@@ -51,8 +53,7 @@ def embed_last_turn_sync(
 def _summary_user_text(dialogue: str) -> str:
     return (
         "请将下列多轮对话压缩为结构化中文摘要，保留：主要结论、未决问题、专有名词与文档名。"
-        "使用 Markdown 小标题。对话原文如下：\n\n"
-        + dialogue[:24000]
+        "使用 Markdown 小标题。对话原文如下：\n\n" + dialogue[:24000]
     )
 
 
@@ -80,7 +81,7 @@ def maybe_summarize_sync(conversation_id: str) -> None:
         messages = _sync_load_messages(s, conversation_id)
         if len(messages) <= MEMORY_RECENT_MESSAGE_COUNT:
             return
-        head = messages[: -MEMORY_RECENT_MESSAGE_COUNT]
+        head = messages[:-MEMORY_RECENT_MESSAGE_COUNT]
         if not head:
             return
         dialogue = "\n\n".join(f"{m.role}: {m.content}" for m in head)
@@ -141,6 +142,94 @@ def maybe_summarize_sync(conversation_id: str) -> None:
         log.warning("summary chroma upsert failed: %s", e)
 
 
+def update_working_memory_sync(
+    *,
+    conversation_id: str,
+    user_id: str,
+    user_text: str,
+    assistant_text: str,
+    assistant_message_id: str,
+) -> None:
+    """从最新一轮抽取可复用事实，并按 fact_key 更新或删除工作记忆。"""
+    settings = get_settings()
+    if not settings.edgefn_api_key:
+        return
+    prompt = (
+        "从本轮对话中提取后续轮次仍有价值、且被用户明确表达或确认的工作记忆。"
+        "包括用户偏好、约束、项目事实、已做决定、未决事项。不要记录临时寒暄，不要推测。"
+        "如果新内容推翻旧事实，使用相同 key 和 upsert；用户明确要求忘记时使用 delete。"
+        "仅输出 JSON 数组，每项格式："
+        '{"key":"稳定短键","value":"事实","action":"upsert|delete","confidence":0.0}。'
+        "没有事实则输出 []。\n\n"
+        f"用户：{user_text[:8000]}\n\n助手：{assistant_text[:8000]}"
+    )
+    messages = build_chat_messages(
+        prompt,
+        deep_research=False,
+        web_search=False,
+        kb_context=None,
+    )
+
+    async def _call() -> tuple[str, str, dict]:
+        return await complete_chat(messages)
+
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            _reasoning, content, _raw = asyncio.run(_call())
+        else:
+            # API 事件循环内的 eager/background 调用不能嵌套 asyncio.run；
+            # 放到短生命周期线程中执行同步 LLM 提取。
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                _reasoning, content, _raw = pool.submit(lambda: asyncio.run(_call())).result()
+        items = parse_llm_json_array(content) or []
+    except Exception as exc:  # noqa: BLE001
+        log.warning("working memory extraction failed: %s", exc)
+        return
+
+    with session_scope() as s:
+        for item in items[:20]:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip().lower()[:128]
+            action = str(item.get("action") or "upsert").strip().lower()
+            value = str(item.get("value") or "").strip()[:4000]
+            if not key:
+                continue
+            existing = s.scalar(
+                select(ConversationFact).where(
+                    ConversationFact.conversation_id == conversation_id,
+                    ConversationFact.fact_key == key,
+                )
+            )
+            if action == "delete":
+                if existing is not None:
+                    s.delete(existing)
+                continue
+            if not value:
+                continue
+            try:
+                confidence = max(0.0, min(1.0, float(item.get("confidence") or 0.8)))
+            except (TypeError, ValueError):
+                confidence = 0.8
+            if existing is None:
+                s.add(
+                    ConversationFact(
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        fact_key=key,
+                        fact_value=value,
+                        confidence=confidence,
+                        source_message_id=assistant_message_id,
+                    )
+                )
+            else:
+                existing.fact_value = value
+                existing.confidence = confidence
+                existing.source_message_id = assistant_message_id
+
+
 def process_chat_memory_after_turn(
     *,
     conversation_id: str,
@@ -159,6 +248,16 @@ def process_chat_memory_after_turn(
         )
     except Exception as e:
         log.warning("embed chat turn failed: %s", e)
+    try:
+        update_working_memory_sync(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            user_text=user_text,
+            assistant_text=assistant_text,
+            assistant_message_id=assistant_message_id,
+        )
+    except Exception as e:
+        log.warning("update working memory failed: %s", e)
     try:
         maybe_summarize_sync(conversation_id)
     except Exception as e:
